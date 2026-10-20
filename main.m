@@ -1,315 +1,442 @@
-% MAIN  Feature analysis and engineering of the UCI Air Quality dataset.
-%   Target: CO(GT). Each section is one step of the assignment (Run Section).
+%% Air Quality (UCI): cleaning, preprocessing and plots
+% MATLAB version of main.py
+% Requires MATLAB R2021a or newer and the Statistics and Machine Learning
+% Toolbox (ksdensity, skewness, corr).
 
-L = aqlib();
+clear; clc; close all;
 
-rawFile    = fullfile('data', 'Raw', 'AirQualityUCI.csv');
-figDir     = 'Figures';
-target     = 'CO(GT)';
-missCode   = -200;
-maxGap     = 3;     % longest gap (hours) filled by interpolation
-maxMissPct = 50;    % variables with more missing values than this are removed
-skewThr    = 1;     % inputs with |skewness| above this are log-transformed
-procDir    = fullfile('data', 'Processed');
-shiftDate  = datetime(2004, 9, 1);   % NOx(GT) level shift found in 2.5
-
-if ~exist(figDir, 'dir'), mkdir(figDir); end
-
-%% 1.1 Load the dataset
-% Missing values are encoded as -200 in the raw file; they become NaN here
-% so that they are not counted as real measurements in the statistics.
-Traw = L.loadData(rawFile);
-T    = L.markMissing(Traw, missCode);
-
-numVars = T.Properties.VariableNames(2:end);
-fprintf('Observations: %d\n', height(T));
-fprintf('Variables:    %d (DateTime + %d numeric)\n', width(T), numel(numVars));
-fprintf('Missing values (total): %d of %d cells (%.2f%%)\n', ...
-    sum(isnan(T{:, numVars}), 'all'), numel(T{:, numVars}), ...
-    100 * mean(isnan(T{:, numVars}), 'all'));
-
-%% 1.2 Time index
-% The data are hourly; check for gaps, duplicates and ordering, since this
-% matters later for time-based imputation and lag features.
-S = L.checkTimeIndex(T.DateTime);
-fprintf('Range: %s to %s\n', S.start, S.stop);
-fprintf('Expected hours: %d | missing hours: %d | duplicates: %d | sorted: %d\n', ...
-    S.expected, S.missing, S.duplicates, S.sorted);
-
-%% 1.3 Missing values per variable
-M = L.missingSummary(T);
-disp(M);
-
-% When was each instrument working? (% of valid hours per month)
-A = L.monthlyAvailability(T);
-disp(A);
-
-fig = L.plotMissingMap(T);
-exportgraphics(fig, fullfile(figDir, 'missing_map.pdf'));
-
-%% 1.4 Distribution of the target
-fig = L.plotTargetDistribution(T.(target), target);
-exportgraphics(fig, fullfile(figDir, 'target_distribution.pdf'));
-
-%% 1.5 Descriptive statistics (summary table)
-D = L.describeVars(T);
-disp(D);
-
-fig = L.plotHistograms(T, numVars);
-exportgraphics(fig, fullfile(figDir, 'feature_histograms.pdf'));
-
-%% 1.6 Correlation with the target
-% Spearman is reported alongside Pearson because several variables are
-% skewed and the relation with CO may be monotonic but not linear.
-C = L.targetCorrelation(T, target);
-disp(C);
-
-fig = L.plotTargetCorrelation(C, target);
-exportgraphics(fig, fullfile(figDir, 'target_correlation.pdf'));
-
-%% 2.1 Missing-value pattern
-% Before choosing an imputation method: do the gaps coincide across
-% variables, and how long are they? Short gaps can be interpolated in time;
-% long gaps (days) cannot be filled credibly without erasing the daily cycle.
-sensorVars = {'PT08.S1(CO)', 'PT08.S2(NMHC)', 'PT08.S3(NOx)', 'PT08.S4(NO2)', ...
-              'PT08.S5(O3)', 'C6H6(GT)', 'T', 'RH', 'AH'};
-sensorMiss = isnan(T{:, sensorVars});
-fprintf('Sensor variables missing on the same rows: %d\n', ...
-    isequal(all(sensorMiss, 2), any(sensorMiss, 2)));
-fprintf('Rows without %s that also miss NOx(GT): %d of %d\n', target, ...
-    sum(isnan(T.(target)) & isnan(T.('NOx(GT)'))), sum(isnan(T.(target))));
-
-G = L.gapSummary(T, maxGap);
-disp(G);
-
-% Sensitivity of the maxGap choice: % of missing cells that would be
-% interpolated for different limits (inputs only matter; CO is the target).
-limits = [1 3 6 12 24];
-S = table();
-for k = 1:numel(limits)
-    Gk = L.gapSummary(T, limits(k));
-    S.(sprintf('maxGap_%dh', limits(k))) = Gk.ShortCellsPct;
-end
-S.Properties.RowNames = Gk.Properties.RowNames;
-disp(S);
-
-% Where do the 1-hour gaps of the analysers fall during the day?
-% A single dominant hour points to a systematic cause (daily calibration).
-H = L.gapHours(T, {target, 'NOx(GT)', 'NO2(GT)'}, 1);
-disp(H(any(H{:, 2:end} > 0, 2), :));
-
-%% 2.2 Remove variables with too many missing values
-% A variable that is mostly missing cannot be imputed without inventing most
-% of it. NMHC(GT) is the only one above the limit (90%); the next worst input
-% has ~18%, so any limit between ~20% and 90% gives the same result.
-[Tc, dropped] = L.dropSparseVars(T, maxMissPct, {target});
-fprintf('Removed (> %d%% missing): %s\n', maxMissPct, strjoin(dropped, ', '));
-fprintf('Variables before: %d | after: %d\n', width(T) - 1, width(Tc) - 1);
-
-inputPct = M.Percent(~ismember(M.Properties.RowNames, [dropped, {target}]));
-fprintf('Highest %% missing among the remaining inputs: %.2f%%\n', max(inputPct));
-
-%% 2.3 Interpolate short gaps in the input features
-% Linear interpolation in time, only for gaps of at most maxGap hours
-% (mostly the daily 1-hour calibration gaps of NOx/NO2). Long gaps stay NaN.
-% The target is never interpolated: missing CO values are not invented.
-inputVars = setdiff(Tc.Properties.VariableNames(2:end), {target}, 'stable');
-[Ti, filled] = L.interpolateGaps(Tc, inputVars, maxGap);
-
-% Before/after: missing values per variable
-Mb = L.missingSummary(Tc);
-Ma = L.missingSummary(Ti);
-Ma = Ma(Mb.Properties.RowNames, :);
-B = table(Mb.Missing, Ma.Missing, Mb.Missing - Ma.Missing, ...
-    'RowNames', Mb.Properties.RowNames, ...
-    'VariableNames', {'MissingBefore', 'MissingAfter', 'Interpolated'});
-disp(B);
-fprintf('Cells interpolated: %d | target unchanged: %d\n', ...
-    sum(filled, 'all'), isequaln(Tc.(target), Ti.(target)));
-
-% Before/after: the statistics of the inputs should barely change, since
-% only a few isolated hours were filled
-Db = L.describeVars(Tc(:, inputVars));
-Da = L.describeVars(Ti(:, inputVars));
-disp(table(Db.Mean, Da.Mean, Db.Std, Da.Std, 'RowNames', inputVars, ...
-    'VariableNames', {'MeanBefore', 'MeanAfter', 'StdBefore', 'StdAfter'}));
-
-% Why does the NOx/NO2 mean drop? The interpolated hours are mostly at
-% 03:00 (low traffic), so before interpolation night hours were missing
-% more often than day hours and the mean was biased upwards.
-for v = {'NOx(GT)', 'NO2(GT)'}
-    k = find(strcmp(inputVars, v{1}));
-    fprintf('%s: mean of interpolated values %.1f vs mean of measured values %.1f\n', ...
-        v{1}, mean(Ti.(v{1})(filled(:, k))), mean(Tc.(v{1}), 'omitnan'));
+% -------------------------------------------------------------------------
+% Paths, relative to the folder this script is in (the repository root)
+% -------------------------------------------------------------------------
+root = fileparts(mfilename("fullpath"));
+if root == "" || startsWith(root, tempdir)          % e.g. when running a single section
+    try
+        root = fileparts(matlab.desktop.editor.getActiveFilename);
+    catch
+        root = pwd;
+    end
 end
 
-% Before/after plot for one week (Mon 8 - Sun 14 Nov 2004), chosen because it
-% contains both cases: daily 1-hour gaps that are filled and a long gap that
-% is deliberately left missing.
-win  = Tc.DateTime >= datetime(2004, 11, 8) & Tc.DateTime < datetime(2004, 11, 15);
-show = {'NOx(GT)', 'NO2(GT)'};
-[~, cols] = ismember(show, inputVars);   % column of each shown variable in 'filled'
-fig = L.plotInterpolation(Tc.DateTime(win), Tc{win, show}, Ti{win, show}, ...
-    filled(win, cols), show);
-exportgraphics(fig, fullfile(figDir, 'interpolation_example.pdf'));
+raw_path = fullfile(root, "data", "Raw", "AirQualityUCI.csv");
+out_dir  = fullfile(root, "data", "Processed");
+fig_dir  = fullfile(root, "Figures");
+if ~isfolder(out_dir), mkdir(out_dir); end
+if ~isfolder(fig_dir), mkdir(fig_dir); end
 
-% Whole-period view: valid values per hour of the day, before and after.
-% Shows what the interpolation corrects (the systematic 03:00 gap) using all
-% the data, not only the example week above.
-Vb = L.validByHour(Tc, show);
-Va = L.validByHour(Ti, show);
-disp(table(Vb.Hour, Vb.('NOx(GT)'), Va.('NOx(GT)'), Vb.('NO2(GT)'), Va.('NO2(GT)'), ...
-    'VariableNames', {'Hour', 'NOx_before', 'NOx_after', 'NO2_before', 'NO2_after'}));
+% -------------------------------------------------------------------------
+% Colours and plot defaults
+% -------------------------------------------------------------------------
+blue   = [46 111 158] / 255;   % #2E6F9E
+navy   = [27  63  92] / 255;   % #1B3F5C
+red    = [192 57  43] / 255;   % #C0392B
+orange = [230 126 34] / 255;   % #E67E22
+green  = [39 174  96] / 255;   % #27AE60
+grey   = [0.27 0.27 0.27];
 
-fig = L.plotHourlyCoverage(Vb, Va, show);
-exportgraphics(fig, fullfile(figDir, 'interpolation_hourly_coverage.pdf'));
+set(groot, "defaultAxesFontSize", 14, "defaultAxesTickDir", "out", ...
+    "defaultAxesBox", "off", "defaultAxesXGrid", "on", "defaultAxesYGrid", "on", ...
+    "defaultAxesGridAlpha", 0.15, "defaultFigureColor", "w");
 
-%% 2.4 Keep only complete rows (target and all inputs present)
-% Rows without the target cannot be used to relate inputs to CO, and the
-% target is never invented. Rows with a long gap in an input are also
-% excluded instead of filling days of data. Rows are marked, not deleted:
-% Ti stays hourly (needed for lag features); analyses use Tk = Ti(keep, :).
-keep = L.completeRows(Ti, [{target}, inputVars]);
-Tk   = Ti(keep, :);
+% -------------------------------------------------------------------------
+% Column lists
+% -------------------------------------------------------------------------
+target_col = "CO(GT)";
+all_num = ["CO(GT)", "PT08.S1(CO)", "NMHC(GT)", "C6H6(GT)", "PT08.S2(NMHC)", ...
+           "NOx(GT)", "PT08.S3(NOx)", "NO2(GT)", "PT08.S4(NO2)", "PT08.S5(O3)", ...
+           "T", "RH", "AH"];
+feature_cols = ["PT08.S1(CO)", "C6H6(GT)", "PT08.S2(NMHC)", "NOx(GT)", "PT08.S3(NOx)", ...
+                "NO2(GT)", "PT08.S4(NO2)", "PT08.S5(O3)", "T", "RH", "AH"];
+cols = [target_col, feature_cols];
+sensor_cols = ["PT08.S1(CO)", "PT08.S2(NMHC)", "C6H6(GT)", "PT08.S3(NOx)", ...
+               "PT08.S4(NO2)", "PT08.S5(O3)", "T", "RH", "AH"];
+targets = ["NOx(GT)", "NO2(GT)"];   % columns that still need imputation
+max_gap = 3;                        % gaps up to 3 hours are interpolated
 
-noTarget = isnan(Ti.(target));
-noInput  = any(isnan(Ti{:, inputVars}), 2);
-fprintf('Rows before: %d | kept: %d (%.1f%%) | excluded: %d\n', ...
-    height(Ti), sum(keep), 100 * mean(keep), sum(~keep));
-fprintf('  only target missing: %d | only inputs missing: %d | both: %d\n', ...
-    sum(noTarget & ~noInput), sum(~noTarget & noInput), sum(noTarget & noInput));
+%% 1. Load the data
+% Semicolon separator, comma as decimal mark, original column names kept.
+opts = detectImportOptions(raw_path, "Delimiter", ";", "VariableNamingRule", "preserve");
+opts.SelectedVariableNames = ["Date", "Time", all_num];   % drops the empty trailing columns
+opts = setvartype(opts, ["Date", "Time"], "string");
+opts = setvartype(opts, all_num, "double");
+opts = setvaropts(opts, all_num, "DecimalSeparator", ",");
+df = readtable(raw_path, opts);
 
-% Is the kept subset still representative of the target?
-% Compare CO over all hours where it was measured vs the kept rows only.
-Dall  = L.describeVars(Ti(~noTarget, {target}));
-Dkeep = L.describeVars(Tk(:, {target}));
-Dall.Properties.RowNames  = {'CO, all measured hours'};
-Dkeep.Properties.RowNames = {'CO, kept rows'};
-disp([Dall; Dkeep]);
+df = df(strlength(df.Date) > 0, :);    % remove blank rows at the end of the file
 
-% Rows kept per month: does the exclusion remove whole periods?
-[g, month] = findgroups(dateshift(Ti.DateTime, 'start', 'month'));
-month.Format = 'MMM yyyy';
-disp(table(month, splitapply(@sum, keep, g), round(100 * splitapply(@mean, keep, g), 1), ...
-    'VariableNames', {'Month', 'RowsKept', 'PctKept'}));
+X = df{:, all_num};
+X(X == -200) = NaN;                    % -200 is the missing-value code
+df{:, all_num} = X;
+df_before = df;
 
-%% 2.5 Outliers
-% Identification with Tukey's rule (1.5 IQR) on the complete rows. An
-% outlier is only removed if it is implausible; pollution peaks are real
-% events and are exactly the hours a model of CO must be able to explain.
-allVars = [{target}, inputVars];
-[So, O] = L.outlierSummary(Tk, allVars, 1.5);
-disp(So);
+df.Datetime = datetime(df.Date + " " + df.Time, "InputFormat", "dd/MM/yyyy HH.mm.ss");
 
-% 1) Physical plausibility: no negative concentrations, RH within 0-100 %
-fprintf('Min of all variables except T: %.3f | RH range: %.1f to %.1f %%\n', ...
-    min(Tk{:, setdiff(allVars, {'T'})}, [], 'all'), min(Tk.RH), max(Tk.RH));
+%% 2. Timestamp checks
+ts = df.Datetime;
+h = hours(ts - min(ts));
+fprintf("Duplicates: %d\n", numel(ts) - numel(unique(ts)));
+fprintf("Sorted: %d\n", issorted(ts));
+fprintf("Range: %s to %s\n", string(min(ts)), string(max(ts)));
+fprintf("Expected hours: %d, present: %d, missing: %d\n", ...
+    round(max(h)) + 1, numel(unique(round(h))), round(max(h)) + 1 - numel(unique(round(h))));
+[step_h, ~, ic] = unique(hours(diff(ts)));
+disp(table(step_h, accumarray(ic, 1), 'VariableNames', {'Step_hours', 'Count'}))
 
-% 2) Do the outliers of one pollutant coincide with outliers of others?
-% (meteorological variables are left out: they are not pollutants)
-polVars = setdiff(allVars, {'T', 'RH', 'AH'}, 'stable');
-[~, iPol] = ismember(polVars, allVars);
-Co = L.outlierCooccurrence(O(:, iPol), polVars);
+%% 3. Missing values per column
+miss = sum(isnan(df{:, all_num}))';
+missing_tbl = table(miss, round(miss / height(df) * 100, 2), ...
+    'RowNames', cellstr(all_num), 'VariableNames', {'Missing', 'PctMissing'});
+missing_tbl = sortrows(missing_tbl, 'Missing', 'descend');
+fprintf("\nTotal missing values: %d\n", sum(miss));
+disp(missing_tbl)
 
-% Median CO during the outlier hours of each variable (overall median: 1.8).
-% Unlike the co-occurrence, this does not depend on the sign of the relation:
-% PT08.S3(NOx) responds inversely, so its high values mean LOW pollution.
-Co.MedianCO = arrayfun(@(j) median(Tk.(target)(O(:, j))), iPol)';
-disp(Co);
-fprintf('Median CO over all kept rows: %.2f\n', median(Tk.(target)));
+%% 4. Distribution of the target
+target = df.(target_col);
+target = target(~isnan(target));
+mu = mean(target);
+med = median(target);
 
-% 3) When do the outliers happen? (number per month, CO and NOx)
-[g, month] = findgroups(dateshift(Tk.DateTime, 'start', 'month'));
-month.Format = 'MMM yyyy';
-iNOx = find(strcmp(allVars, 'NOx(GT)'));
-disp(table(month, splitapply(@sum, keep(keep), g), splitapply(@sum, O(:, 1), g), ...
-    splitapply(@sum, O(:, iNOx), g), ...
-    'VariableNames', {'Month', 'Rows', 'CO_outliers', 'NOx_outliers'}));
+fig = figure("Position", [100 100 900 560]);
+tl = tiledlayout(fig, 5, 1, "TileSpacing", "none", "Padding", "compact");
 
-% NOx has no outliers from Mar to Aug 2004 but many in Mar 2005 (same
-% month, other year): check whether the NOx level itself changed over time,
-% using monthly medians of NOx, CO and their ratio.
-medNOx = splitapply(@median, Tk.('NOx(GT)'), g);
-medCO  = splitapply(@median, Tk.(target), g);
-disp(table(month, medCO, medNOx, round(medNOx ./ medCO), ...
-    'VariableNames', {'Month', 'MedianCO', 'MedianNOx', 'NOx_per_CO'}));
+axH = nexttile(tl, [4 1]); hold(axH, "on");
+binw = 0.2;   % bin edges at x.x5 so each bin holds exactly two 0.1-step values
+histogram(axH, target, 0.05:binw:(max(target) + binw), ...
+    "FaceColor", blue, "EdgeColor", "w", "FaceAlpha", 0.8);
+xi = linspace(min(target), max(target), 400);
+plot(axH, xi, ksdensity(target, xi) * numel(target) * binw, "Color", navy, "LineWidth", 2);
+hm = xline(axH, mu, "LineStyle", "--", "Color", red, "LineWidth", 1.5, ...
+    "DisplayName", sprintf("Mean = %.2f", mu));
+hd = xline(axH, med, "LineStyle", ":", "Color", orange, "LineWidth", 2, ...
+    "DisplayName", sprintf("Median = %.2f", med));
+legend(axH, [hm hd], "Box", "off");
+ylabel(axH, "Count");
+title(axH, "Distribution of CO(GT)", "FontWeight", "bold");
+axH.XTickLabel = {};
 
-fig = L.plotBoxplots(Tk, allVars);
-exportgraphics(fig, fullfile(figDir, 'outliers_boxplots.pdf'));
+axB = nexttile(tl); hold(axB, "on");
+boxchart(axB, target, "Orientation", "horizontal", "BoxFaceColor", blue, ...
+    "BoxFaceAlpha", 0.35, "BoxWidth", 0.5, "WhiskerLineColor", grey, ...
+    "MarkerStyle", ".", "MarkerColor", blue);
+axB.YTick = [];
+axB.YColor = "none";
+axB.YGrid = "off";
+xlabel(axB, "CO concentration (mg/m³)");
+linkaxes([axH axB], "x");
 
-%% 2.6 Transformation and scaling of the input features
-% (a) Log transform of the strongly skewed inputs (|skewness| > skewThr):
-%     compresses the long right tail without removing any value (the
-%     outliers are kept, see 2.5). The target stays in mg/m^3: there is no
-%     model yet, and transforming the target is a modelling decision.
-Ds = L.describeVars(Tk(:, inputVars));
-logVars = inputVars(abs(Ds.Skewness') > skewThr);
-[Tl, logNames] = L.logTransform(Tk, logVars);
+exportgraphics(fig, fullfile(fig_dir, "co_distribution.pdf"), "ContentType", "vector");
 
-Dl = L.describeVars(Tl(:, logNames));
-disp(table(Ds{logVars, 'Skewness'}, Dl.Skewness, Ds{logVars, 'Kurtosis'}, Dl.Kurtosis, ...
-    'RowNames', logVars, ...
-    'VariableNames', {'SkewBefore', 'SkewAfter', 'KurtBefore', 'KurtAfter'}));
+%% 5. Descriptive statistics (Table II)
+S = df{:, cols};
+stats = [mean(S, "omitnan")', std(S, "omitnan")', min(S, [], "omitnan")', ...
+         median(S, "omitnan")', max(S, [], "omitnan")', skewness(S, 0)'];
+disp(array2table(round(stats, 2), 'RowNames', cellstr(cols), ...
+    'VariableNames', {'mean', 'std', 'min', 'median', 'max', 'skew'}))
 
-fig = L.plotTransformHist(Tk{:, logVars}, Tl{:, logNames}, logVars, logNames);
-exportgraphics(fig, fullfile(figDir, 'log_transform.pdf'));
+printLatex(cols, stats, " & mean & std & min & median & max & skew \\", ...
+    "Descriptive statistics of the target and features.", "tab:descriptive_stats");
 
-% (b) Z-score of all inputs: the inputs have very different scales (AH ~1,
-%     PT08.S4 ~1500), which would let large-valued variables dominate
-%     distance- and gradient-based methods. Parameters are computed once
-%     (zscoreFit) and applied separately (zscoreApply), so that a future model
-%     can fit them on the training set only.
-modelVars = setdiff(Tl.Properties.VariableNames(2:end), {target}, 'stable');
-P  = L.zscoreFit(Tl, modelVars);
-Tz = L.zscoreApply(Tl, P);
+%% 6. Histograms of the target and every feature
+fig = figure("Position", [50 50 1600 900]);
+tl = tiledlayout(fig, 3, 4, "TileSpacing", "compact", "Padding", "compact");
+for c = cols
+    ax = nexttile(tl); hold(ax, "on");
+    x = df.(c);
+    x = x(~isnan(x));
+    hh = histogram(ax, x, 40, "FaceColor", blue, "EdgeColor", "w", "FaceAlpha", 0.75);
+    xi = linspace(min(x), max(x), 300);
+    plot(ax, xi, ksdensity(x, xi) * numel(x) * hh.BinWidth, "Color", blue, "LineWidth", 1.5);
+    title(ax, c, "FontWeight", "bold");
+end
+exportgraphics(fig, fullfile(fig_dir, "feature_distributions.pdf"), "ContentType", "vector");
 
-Dz = L.describeVars(Tz(:, modelVars));
-disp(table(round(P.Mean, 3), round(P.Std, 3), Dz.Mean, Dz.Std, Dz.Min, Dz.Max, ...
-    'RowNames', modelVars, ...
-    'VariableNames', {'MeanBefore', 'StdBefore', 'MeanAfter', 'StdAfter', 'MinAfter', 'MaxAfter'}));
+%% 7. Features grouped by distribution shape (standardised KDEs)
+groups = {"Strongly right-skewed",   ["NOx(GT)", "C6H6(GT)", "PT08.S3(NOx)"];
+          "Moderately right-skewed", ["PT08.S1(CO)", "PT08.S2(NMHC)", "PT08.S5(O3)", "NO2(GT)"];
+          "Approximately symmetric", ["PT08.S4(NO2)", "T", "RH", "AH"]};
+palette = [blue; orange; green; red];
+styles = ["-", "--", "-.", ":"];
 
-%% 2.7 Save the processed data
-% Tk: complete rows, original units (for EDA and interpretation)
-% Tz: complete rows, log-transformed and standardised inputs, CO in mg/m^3
-% P:  scaling parameters, needed to apply the same scaling to new data
-if ~exist(procDir, 'dir'), mkdir(procDir); end
-writetable(Tk, fullfile(procDir, 'airquality_clean.csv'));
-writetable(Tz, fullfile(procDir, 'airquality_scaled.csv'));
-writetable(P,  fullfile(procDir, 'scaling_params.csv'), 'WriteRowNames', true);
-fprintf('Saved %d rows to %s\n', height(Tk), procDir);
+fig = figure("Position", [50 50 1600 480]);
+tl = tiledlayout(fig, 1, 3, "TileSpacing", "compact", "Padding", "compact");
+kde_axes = gobjects(1, 3);
+for g = 1:3
+    ax = nexttile(tl); hold(ax, "on");
+    kde_axes(g) = ax;
+    feats = groups{g, 2};
+    for i = 1:numel(feats)
+        x = df.(feats(i));
+        x = x(~isnan(x));
+        z = (x - mean(x)) / std(x);
+        xi = linspace(min(z), max(z), 400);
+        f = ksdensity(z, xi);
+        fill(ax, [xi fliplr(xi)], [f zeros(size(f))], palette(i, :), ...
+            "FaceAlpha", 0.08, "EdgeColor", "none", "HandleVisibility", "off");
+        plot(ax, xi, f, "LineStyle", styles(i), "Color", palette(i, :), "LineWidth", 2.2, ...
+            "DisplayName", sprintf("%s (skew = %.2f)", feats(i), skewness(x, 0)));
+    end
+    xline(ax, 0, "LineStyle", "--", "Color", [0.5 0.5 0.5], "HandleVisibility", "off");
+    xlim(ax, [-3 6]);
+    title(ax, groups{g, 1}, "FontWeight", "bold");
+    xlabel(ax, "Standardised value (z-score)");
+    legend(ax, "Box", "off", "Location", "northeast", "FontSize", 10);
+end
+ylabel(kde_axes(1), "Density");
+linkaxes(kde_axes, "y");
+exportgraphics(fig, fullfile(fig_dir, "feature_distributions_grouped.pdf"), "ContentType", "vector");
 
-%% 3.1 Each input against the target
-% Original units (Tk), so that the relations can be read physically. The
-% points are split in the two periods found in 2.5 (before/after the NOx
-% level shift) to see which relations with CO stay stable over time. The
-% line is the median CO in 15 quantile bins of the input: it shows the shape
-% of the relation (linear, curved, flat) without assuming any model.
-late = Tk.DateTime >= shiftDate;
-periodNames = {'Mar-Aug 2004', 'Sep 2004-Apr 2005'};
-fig = L.plotFeatureVsTarget(Tk, inputVars, target, late, periodNames);
-exportgraphics(fig, fullfile(figDir, 'features_vs_target.pdf'), ...
-    'ContentType', 'image', 'Resolution', 200);
 
-% The same relations as numbers: Spearman correlation with CO per period
-Ce = L.targetCorrelation(Tk(~late, [{'DateTime', target}, inputVars]), target);
-Cl = L.targetCorrelation(Tk(late,  [{'DateTime', target}, inputVars]), target);
-Cl = Cl(Ce.Properties.RowNames, :);
-disp(table(Ce.Spearman, Cl.Spearman, Cl.Spearman - Ce.Spearman, Ce.Pearson, Cl.Pearson, ...
-    'RowNames', Ce.Properties.RowNames, ...
-    'VariableNames', {'SpearmanEarly', 'SpearmanLate', 'Change', 'PearsonEarly', 'PearsonLate'}));
-fprintf('Rows: early %d | late %d\n', sum(~late), sum(late));
+%% 8. Spearman correlation with the target
+rho = corr(df{:, feature_cols}, df.(target_col), "Type", "Spearman", "Rows", "pairwise");
+[~, idx] = sort(abs(rho), "descend");
 
-% The two periods are also different seasons, so a change between them may
-% be seasonal. Control for both season and CO level: compare spring 2004 with
-% spring 2005 (Mar-Apr) at the same CO level (1.5-2.5 mg/m^3). An input that
-% still changes points to a change in the instrument (drift/recalibration).
-mo  = Tk.DateTime.Month;   % (property, because 'month' is a variable above)
-yr  = Tk.DateTime.Year;
-mid = Tk.(target) >= 1.5 & Tk.(target) <= 2.5;
-s04 = ismember(mo, [3 4]) & yr == 2004 & mid;
-s05 = ismember(mo, [3 4]) & yr == 2005 & mid;
-a = varfun(@median, Tk(s04, inputVars));
-b = varfun(@median, Tk(s05, inputVars));
-disp(table(a{1, :}', b{1, :}', round(100 * (b{1, :} - a{1, :}) ./ a{1, :})', ...
-    'RowNames', inputVars, 'VariableNames', {'Spring2004', 'Spring2005', 'PctChange'}));
-fprintf('Rows with CO in [1.5, 2.5]: spring 2004 %d | spring 2005 %d\n', sum(s04), sum(s05));
+fig = figure("Position", [100 100 800 600]);
+ax = axes(fig); hold(ax, "on");
+barh(ax, rho(idx), 0.7, "FaceColor", blue, "EdgeColor", "none");
+xline(ax, 0, "Color", "k", "LineWidth", 0.8);
+ax.YTick = 1:numel(idx);
+ax.YTickLabel = cellstr(feature_cols(idx));
+ax.YDir = "reverse";
+ax.YGrid = "off";
+xlabel(ax, "Spearman correlation with CO(GT)");
+title(ax, "Feature correlation with the target", "FontWeight", "bold");
+exportgraphics(fig, fullfile(fig_dir, "corr_with_target.pdf"), "ContentType", "vector");
+
+%% 9. Outliers (IQR rule) on the data before cleaning
+X = df{:, all_num};
+q1 = quantile7(X, 0.25);
+q3 = quantile7(X, 0.75);
+iqrv = q3 - q1;
+n_upper = sum(X > q3 + 1.5 * iqrv)';
+n_lower = sum(X < q1 - 1.5 * iqrv)';
+n_valid = sum(~isnan(X))';
+disp(table(n_upper + n_lower, round((n_upper + n_lower) ./ n_valid * 100, 2), n_upper, n_lower, ...
+    'RowNames', cellstr(all_num), 'VariableNames', {'Outliers', 'Pct', 'Upper', 'Lower'}))
+
+%% 10. Remove NMHC(GT), sensor-offline rows and rows with a missing target
+df = removevars(df, "NMHC(GT)");
+
+offline = all(isnan(df{:, sensor_cols}), 2);
+fprintf("Sensor-offline rows dropped: %d\n", sum(offline));
+df = df(~offline, :);
+
+no_target = isnan(df.(target_col));
+fprintf("Missing-target rows dropped: %d\n", sum(no_target));
+df = df(~no_target, :);
+fprintf("Rows remaining: %d\n", height(df));
+
+df = sortrows(df, "Datetime");
+
+%% 11. Clipping to the IQR bounds (features only, not the target)
+X = df{:, feature_cols};
+q1 = quantile7(X, 0.25);
+q3 = quantile7(X, 0.75);
+iqrv = q3 - q1;
+lo = q1 - 1.5 * iqrv;
+hi = q3 + 1.5 * iqrv;
+
+n_clip = sum(X < lo | X > hi)';
+disp(table(n_clip, round(n_clip ./ sum(~isnan(X))' * 100, 2), ...
+    'RowNames', cellstr(feature_cols), 'VariableNames', {'Clipped', 'Pct'}))
+fprintf("%.2f%% of all feature values clipped\n", sum(n_clip) / sum(~isnan(X), "all") * 100);
+
+% "includenan" keeps missing values missing (by default min/max would replace them)
+df{:, feature_cols} = min(max(X, lo, "includenan"), hi, "includenan");
+
+%% 12. Gap analysis on a complete hourly grid
+hidx = round(hours(df.Datetime - df.Datetime(1))) + 1;   % position of each row on the grid
+n_grid = hidx(end);
+in_df = false(n_grid, 1);
+in_df(hidx) = true;
+
+fprintf("\nMissing before imputation:\n");
+disp(array2table(sum(isnan(df{:, targets})), 'VariableNames', cellstr(targets)))
+
+for c = targets
+    v = NaN(n_grid, 1);
+    v(hidx) = df.(c);
+    [starts, ends] = nanRuns(isnan(v));
+    run_len = ends - starts + 1;
+    needs_fill = arrayfun(@(s, e) sum(in_df(s:e)), starts, ends);
+    rel = needs_fill > 0;
+    short = run_len <= max_gap;
+    fprintf("%s: %d relevant gaps, longest = %d h, median = %g h | " + ...
+            "values in short gaps: %d, in long gaps: %d\n", c, sum(rel), ...
+            max(run_len(rel)), median(run_len(rel)), ...
+            sum(needs_fill(rel & short)), sum(needs_fill(rel & ~short)));
+end
+
+%% 13. Imputation
+% Step 1: linear interpolation over time for gaps of up to max_gap hours
+for c = targets
+    v = NaN(n_grid, 1);
+    v(hidx) = df.(c);
+    na = isnan(v);
+    [starts, ends] = nanRuns(na);
+    run_len = zeros(n_grid, 1);
+    for i = 1:numel(starts)
+        run_len(starts(i):ends(i)) = ends(i) - starts(i) + 1;
+    end
+    v_interp = fillmissing(v, "linear", "EndValues", "none");   % only gaps with values on both sides
+    fill_mask = na & run_len <= max_gap;
+    v(fill_mask) = v_interp(fill_mask);
+    df.(c) = v(hidx);
+end
+fprintf("\nLeft for KNN:\n");
+disp(array2table(sum(isnan(df{:, targets})), 'VariableNames', cellstr(targets)))
+
+% Step 2: KNN (k = 5) for the remaining long-gap values, target not used
+X = df{:, feature_cols};
+mu_knn = mean(X, "omitnan");
+sd_knn = std(X, 1, "omitnan");
+Xs = knnImpute((X - mu_knn) ./ sd_knn, 5);
+X_knn = Xs .* sd_knn + mu_knn;
+X(isnan(X)) = X_knn(isnan(X));          % only missing values are replaced
+df{:, feature_cols} = X;
+fprintf("Missing after imputation: %d\n", sum(isnan(X), "all"));
+
+%% 14. Standardisation
+df_before_scaling = df;
+
+X = df{:, feature_cols};
+scale_mu = mean(X);
+scale_sd = std(X, 1);                   % population std, as in sklearn's StandardScaler
+df{:, feature_cols} = (X - scale_mu) ./ scale_sd;
+
+Z = df{:, feature_cols};
+disp(table(round(mean(Z), 3)', round(std(Z), 3)', ...
+    'RowNames', cellstr(feature_cols), 'VariableNames', {'mean', 'std'}))
+
+%% 15. Before/after standardisation plot
+fig = figure("Position", [50 50 1500 650]);
+tl = tiledlayout(fig, 1, 2, "TileSpacing", "compact", "Padding", "compact");
+panels = {df_before_scaling{:, feature_cols}, "Before scaling",        "Original value";
+          df{:, feature_cols},                "After standardisation", "Standardised value (z-score)"};
+box_axes = gobjects(1, 2);
+for p = 1:2
+    ax = nexttile(tl); hold(ax, "on");
+    box_axes(p) = ax;
+    boxchart(ax, panels{p, 1}, "Orientation", "horizontal", "BoxFaceColor", blue, ...
+        "BoxFaceAlpha", 0.35, "BoxWidth", 0.65, "LineWidth", 1.1, ...
+        "WhiskerLineColor", grey, "MarkerStyle", ".", "MarkerColor", blue);
+    ax.YTick = 1:numel(feature_cols);
+    ax.YDir = "reverse";
+    ax.YGrid = "off";
+    if p == 1
+        ax.YTickLabel = cellstr(feature_cols);
+    else
+        ax.YTickLabel = {};
+    end
+    title(ax, panels{p, 2}, "FontWeight", "bold");
+    xlabel(ax, panels{p, 3});
+end
+linkaxes(box_axes, "y");
+
+ax = box_axes(2);
+yl = ylim(ax);
+band = patch(ax, [-1 1 1 -1], [yl(1) yl(1) yl(2) yl(2)], [0.5 0.5 0.5], ...
+    "FaceAlpha", 0.08, "EdgeColor", "none");
+uistack(band, "bottom");
+xline(ax, 0, "LineStyle", "--", "Color", [0.33 0.33 0.33]);
+
+title(tl, "Effect of standardisation on the feature distributions", ...
+    "FontWeight", "bold", "FontSize", 17);
+exportgraphics(fig, fullfile(fig_dir, "scaling_before_after.pdf"), "ContentType", "vector");
+
+%% 16. Before/after cleaning comparison table
+before = df_before{:, cols};
+after = df_before_scaling{:, cols};
+cmp = [std(before, "omitnan")', std(after)', ...
+       max(before, [], "omitnan")', max(after)', ...
+       skewness(before, 0)', skewness(after, 0)'];
+disp(array2table(round(cmp, 2), 'RowNames', cellstr(cols), 'VariableNames', ...
+    {'std_before', 'std_after', 'max_before', 'max_after', 'skew_before', 'skew_after'}))
+
+header = [" & \multicolumn{2}{c}{std} & \multicolumn{2}{c}{max} & \multicolumn{2}{c}{skew} \\"
+          "\cmidrule(lr){2-3} \cmidrule(lr){4-5} \cmidrule(lr){6-7}"
+          " & before & after & before & after & before & after \\"];
+printLatex(cols, cmp, header, ...
+    "Standard deviation, maximum and skewness before and after cleaning (row removal, clipping and imputation).", ...
+    "tab:stats_comparison");
+
+%% 17. Save the processed files
+save_cols = ["Datetime", target_col, feature_cols];
+
+clean_out = df_before_scaling(:, save_cols);    % cleaned, original units
+scaled_out = df(:, save_cols);                   % features standardised, target unchanged
+clean_out.Datetime.Format = "yyyy-MM-dd HH:mm:ss";
+scaled_out.Datetime.Format = "yyyy-MM-dd HH:mm:ss";
+
+writetable(clean_out, fullfile(out_dir, "airquality_clean.csv"));
+writetable(scaled_out, fullfile(out_dir, "airquality_scaled.csv"));
+
+% Mean and std of each feature, needed to scale new data the same way
+% or to convert scaled values back to original units
+scaling_params = table(feature_cols', scale_mu', scale_sd', ...
+    'VariableNames', {'feature', 'mean', 'std'});
+writetable(scaling_params, fullfile(out_dir, "scaling_params.csv"));
+
+fprintf("Saved %d rows to %s\n", height(clean_out), out_dir);
+
+
+%% ------------------------------------------------------------------------
+%  Local functions
+%  ------------------------------------------------------------------------
+
+function q = quantile7(X, p)
+% Column-wise quantile with linear interpolation, ignoring NaN.
+% Same method as pandas/numpy, so the IQR bounds match the Python version
+% (MATLAB's built-in quantile uses a slightly different method).
+q = NaN(1, size(X, 2));
+for j = 1:size(X, 2)
+    x = sort(X(~isnan(X(:, j)), j));
+    n = numel(x);
+    if n == 0, continue; end
+    h = (n - 1) * p + 1;
+    lo = floor(h);
+    hi = min(lo + 1, n);
+    q(j) = x(lo) + (h - lo) * (x(hi) - x(lo));
+end
+end
+
+function [starts, ends] = nanRuns(na)
+% Start and end positions of each run of consecutive true values.
+d = diff([false; na(:); false]);
+starts = find(d == 1);
+ends = find(d == -1) - 1;
+end
+
+function Xs = knnImpute(Xs, k)
+% K-nearest-neighbours imputation with NaN-aware Euclidean distance, the same
+% approach as sklearn's KNNImputer: for each missing value, the k most
+% similar rows that have that column observed are found (using only the
+% columns observed in both rows), and the mean of their values is used.
+X = Xs;                                  % distances always use the original values
+n_feat = size(X, 2);
+[rows, cols_miss] = find(isnan(X));
+for m = 1:numel(rows)
+    r = rows(m);
+    c = cols_miss(m);
+    donors = find(~isnan(X(:, c)));
+    D = X(donors, :) - X(r, :);
+    present = ~isnan(D);
+    D(~present) = 0;
+    n_present = sum(present, 2);
+    d = sqrt(n_feat ./ max(n_present, 1) .* sum(D .^ 2, 2));
+    d(n_present == 0) = Inf;
+    [~, nearest] = mink(d, k);
+    Xs(r, c) = mean(X(donors(nearest), c));
+end
+end
+
+function printLatex(row_names, data, header, caption, label)
+% Prints a booktabs LaTeX table to the Command Window.
+fprintf("\n\\begin{table}[htbp]\n\\centering\n");
+fprintf("\\caption{%s}\n\\label{%s}\n", caption, label);
+fprintf("\\begin{tabular}{l%s}\n\\toprule\n", repmat('r', 1, size(data, 2)));
+fprintf("%s\n", header);
+fprintf("\\midrule\n");
+for i = 1:size(data, 1)
+    fprintf("%s & %s \\\\\n", row_names(i), strjoin(compose("%.2f", data(i, :)), " & "));
+end
+fprintf("\\bottomrule\n\\end{tabular}\n\\end{table}\n");
+end
