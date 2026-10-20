@@ -9,14 +9,17 @@ function L = aqlib()
     L.missingSummary    = @missingSummary;
     L.describeVars      = @describeVars;
     L.targetCorrelation = @targetCorrelation;
+    L.monthlyAvailability = @monthlyAvailability;
 
     % --- Cleaning and preprocessing ---
     L.gapSummary        = @gapSummary;
+    L.gapHours          = @gapHours;
 
     % --- EDA plots ---
     L.plotTargetDistribution = @plotTargetDistribution;
     L.plotHistograms         = @plotHistograms;
     L.plotTargetCorrelation  = @plotTargetCorrelation;
+    L.plotMissingMap         = @plotMissingMap;
 end
 
 %% ===================== Import and exploration =====================
@@ -122,6 +125,20 @@ function C = targetCorrelation(T, target)
     C = C(idx, :);
 end
 
+function A = monthlyAvailability(T)
+% Percentage of hours with a valid value, per month and per variable.
+% Shows when each instrument was working (e.g. NMHC(GT) only early on).
+% Input:  T - data table with a DateTime column (missing values as NaN)
+% Output: A - table with Month and one % column per numeric variable
+    vars = T.Properties.VariableNames(varfun(@isnumeric, T, 'OutputFormat', 'uniform'));
+    [grp, month] = findgroups(dateshift(T.DateTime, 'start', 'month'));
+    month.Format = 'MMM yyyy';
+    A = table(month, 'VariableNames', {'Month'});
+    for k = 1:numel(vars)
+        A.(vars{k}) = round(splitapply(@(x) 100 * mean(~isnan(x)), T.(vars{k}), grp), 1);
+    end
+end
+
 %% ===================== Cleaning and preprocessing =====================
 
 function G = gapSummary(T, maxGap)
@@ -146,12 +163,29 @@ function G = gapSummary(T, maxGap)
     G = sortrows(G, 'Gaps', 'descend');
 end
 
-function r = nanRuns(x)
-% Lengths of the runs of consecutive NaN in a vector.
+function H = gapHours(T, vars, maxLen)
+% Counts at which hour of the day the short gaps start, to check whether
+% they are random or systematic (e.g. a daily calibration of the analyser).
+% Input:  T      - data table with a DateTime column (missing values as NaN)
+%         vars   - cell array of variable names
+%         maxLen - only gaps with at most this many hours are counted
+% Output: H      - table with Hour (0-23) and one count column per variable
+    H = table((0:23)', 'VariableNames', {'Hour'});
+    for k = 1:numel(vars)
+        [r, s] = nanRuns(T.(vars{k}));
+        h = hour(T.DateTime(s(r <= maxLen)));
+        H.(vars{k}) = histcounts(h, -0.5:1:23.5)';
+    end
+end
+
+function [r, s] = nanRuns(x)
+% Lengths and start positions of the runs of consecutive NaN in a vector.
 % Input:  x - numeric vector
 % Output: r - column vector with the length of each run (empty if none)
+%         s - index of the first NaN of each run
     d = diff([0; isnan(x(:)); 0]);
-    r = find(d == -1) - find(d == 1);
+    s = find(d == 1);
+    r = find(d == -1) - s;
 end
 
 %% ===================== EDA plots =====================
@@ -216,6 +250,25 @@ function fig = plotTargetCorrelation(C, target)
     xlabel(['Correlation with ' target]);
     title(['Feature correlation with ' target], 'Interpreter', 'none');
     grid on;
+end
+
+function fig = plotMissingMap(T)
+% Map of missing values over time: one row per variable, dark = missing.
+% Input:  T   - data table with a DateTime column (missing values as NaN)
+% Output: fig - figure handle
+    vars = T.Properties.VariableNames(varfun(@isnumeric, T, 'OutputFormat', 'uniform'));
+    M = isnan(T{:, vars})';
+    fig = newFigure([100 100 1100 450]);
+    imagesc(M);
+    colormap([1 1 1; 0.75 0.15 0.15]);
+    clim([0 1]);
+
+    % one tick at the start of each month
+    ticks = find(T.DateTime == dateshift(T.DateTime, 'start', 'month'));
+    set(gca, 'XTick', ticks, 'XTickLabel', cellstr(T.DateTime(ticks), 'MMM yy'), ...
+        'YTick', 1:numel(vars), 'YTickLabel', vars, 'TickLabelInterpreter', 'none');
+    xlabel('Time');
+    title('Missing values over time (red = missing)');
 end
 
 function fig = newFigure(pos)

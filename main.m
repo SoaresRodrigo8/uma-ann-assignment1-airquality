@@ -36,6 +36,13 @@ fprintf('Expected hours: %d | missing hours: %d | duplicates: %d | sorted: %d\n'
 M = L.missingSummary(T);
 disp(M);
 
+% When was each instrument working? (% of valid hours per month)
+A = L.monthlyAvailability(T);
+disp(A);
+
+fig = L.plotMissingMap(T);
+exportgraphics(fig, fullfile(figDir, 'missing_map.pdf'));
+
 %% 1.4 Distribution of the target
 fig = L.plotTargetDistribution(T.(target), target);
 exportgraphics(fig, fullfile(figDir, 'target_distribution.pdf'));
@@ -70,3 +77,19 @@ fprintf('Rows without %s that also miss NOx(GT): %d of %d\n', target, ...
 
 G = L.gapSummary(T, maxGap);
 disp(G);
+
+% Sensitivity of the maxGap choice: % of missing cells that would be
+% interpolated for different limits (inputs only matter; CO is the target).
+limits = [1 3 6 12 24];
+S = table();
+for k = 1:numel(limits)
+    Gk = L.gapSummary(T, limits(k));
+    S.(sprintf('maxGap_%dh', limits(k))) = Gk.ShortCellsPct;
+end
+S.Properties.RowNames = Gk.Properties.RowNames;
+disp(S);
+
+% Where do the 1-hour gaps of the analysers fall during the day?
+% A single dominant hour points to a systematic cause (daily calibration).
+H = L.gapHours(T, {target, 'NOx(GT)', 'NO2(GT)'}, 1);
+disp(H(any(H{:, 2:end} > 0, 2), :));
