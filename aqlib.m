@@ -20,6 +20,9 @@ function L = aqlib()
     L.completeRows      = @completeRows;
     L.outlierSummary    = @outlierSummary;
     L.outlierCooccurrence = @outlierCooccurrence;
+    L.logTransform      = @logTransform;
+    L.zscoreFit         = @zscoreFit;
+    L.zscoreApply       = @zscoreApply;
 
     % --- EDA plots ---
     L.plotTargetDistribution = @plotTargetDistribution;
@@ -29,6 +32,7 @@ function L = aqlib()
     L.plotInterpolation      = @plotInterpolation;
     L.plotHourlyCoverage     = @plotHourlyCoverage;
     L.plotBoxplots           = @plotBoxplots;
+    L.plotTransformHist      = @plotTransformHist;
 end
 
 %% ===================== Import and exploration =====================
@@ -289,6 +293,47 @@ function C = outlierCooccurrence(O, names)
     C.PctWithOther = round(C.PctWithOther, 1);
 end
 
+function [T, newNames] = logTransform(T, vars)
+% Natural logarithm of the given variables, renamed to 'log_<name>'.
+% All values must be positive (an error is raised otherwise).
+% Input:  T        - data table
+%         vars     - cell array of variables to transform
+% Output: T        - table with the transformed (and renamed) variables
+%         newNames - cell array with the new names, in the order of vars
+    newNames = strcat('log_', vars);
+    for k = 1:numel(vars)
+        x = T.(vars{k});
+        if any(x <= 0)
+            error('logTransform: %s has values <= 0', vars{k});
+        end
+        T.(vars{k}) = log(x);
+    end
+    T = renamevars(T, vars, newNames);
+end
+
+function P = zscoreFit(T, vars)
+% Computes the z-score parameters (mean and standard deviation) of each variable.
+% Kept separate from zscoreApply so that, in a future model, the parameters
+% can be computed on the training set only and reused on new data.
+% Input:  T    - data table
+%         vars - cell array of variable names
+% Output: P    - table with Mean and Std, one row per variable
+    X = T{:, vars};
+    P = table(mean(X, 'omitnan')', std(X, 'omitnan')', ...
+        'RowNames', vars, 'VariableNames', {'Mean', 'Std'});
+end
+
+function T = zscoreApply(T, P)
+% Standardises the variables listed in P: (x - Mean) / Std.
+% Input:  T - data table
+%         P - table from zscoreFit
+% Output: T - table with the standardised variables
+    vars = P.Properties.RowNames;
+    for k = 1:numel(vars)
+        T.(vars{k}) = (T.(vars{k}) - P.Mean(k)) / P.Std(k);
+    end
+end
+
 function [r, s] = nanRuns(x)
 % Lengths and start positions of the runs of consecutive NaN in a vector.
 % Input:  x - numeric vector
@@ -455,6 +500,28 @@ function fig = plotBoxplots(T, vars)
     ylabel('Standardised value (z-score)');
     title('Distribution and outliers (Tukey fences, 1.5 IQR)');
     grid on;
+end
+
+function fig = plotTransformHist(Xb, Xa, namesB, namesA)
+% Histograms before (left) and after (right) a transformation, one row per
+% variable, with the skewness in each title.
+% Input:  Xb     - values before (rows x variables)
+%         Xa     - values after (rows x variables)
+%         namesB - cell array with the names before
+%         namesA - cell array with the names after
+% Output: fig    - figure handle
+    n = numel(namesB);
+    fig = newFigure([100 100 1000 250 * n]);
+    for k = 1:n
+        subplot(n, 2, 2 * k - 1);
+        histogram(Xb(:, k), 50, 'FaceColor', [0.18 0.44 0.62], 'EdgeColor', 'w');
+        title(sprintf('%s  (skewness = %.2f)', namesB{k}, skewness(Xb(:, k))), ...
+            'Interpreter', 'none');
+        subplot(n, 2, 2 * k);
+        histogram(Xa(:, k), 50, 'FaceColor', [0.85 0.15 0.15], 'EdgeColor', 'w');
+        title(sprintf('%s  (skewness = %.2f)', namesA{k}, skewness(Xa(:, k))), ...
+            'Interpreter', 'none');
+    end
 end
 
 function fig = newFigure(pos)

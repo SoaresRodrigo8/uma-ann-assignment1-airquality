@@ -9,6 +9,8 @@ target     = 'CO(GT)';
 missCode   = -200;
 maxGap     = 3;     % longest gap (hours) filled by interpolation
 maxMissPct = 50;    % variables with more missing values than this are removed
+skewThr    = 1;     % inputs with |skewness| above this are log-transformed
+procDir    = fullfile('data', 'Processed');
 
 if ~exist(figDir, 'dir'), mkdir(figDir); end
 
@@ -233,3 +235,44 @@ disp(table(month, medCO, medNOx, round(medNOx ./ medCO), ...
 
 fig = L.plotBoxplots(Tk, allVars);
 exportgraphics(fig, fullfile(figDir, 'outliers_boxplots.pdf'));
+
+%% 2.6 Transformation and scaling of the input features
+% (a) Log transform of the strongly skewed inputs (|skewness| > skewThr):
+%     compresses the long right tail without removing any value (the
+%     outliers are kept, see 2.5). The target stays in mg/m^3: there is no
+%     model yet, and transforming the target is a modelling decision.
+Ds = L.describeVars(Tk(:, inputVars));
+logVars = inputVars(abs(Ds.Skewness') > skewThr);
+[Tl, logNames] = L.logTransform(Tk, logVars);
+
+Dl = L.describeVars(Tl(:, logNames));
+disp(table(Ds{logVars, 'Skewness'}, Dl.Skewness, Ds{logVars, 'Kurtosis'}, Dl.Kurtosis, ...
+    'RowNames', logVars, ...
+    'VariableNames', {'SkewBefore', 'SkewAfter', 'KurtBefore', 'KurtAfter'}));
+
+fig = L.plotTransformHist(Tk{:, logVars}, Tl{:, logNames}, logVars, logNames);
+exportgraphics(fig, fullfile(figDir, 'log_transform.pdf'));
+
+% (b) Z-score of all inputs: the inputs have very different scales (AH ~1,
+%     PT08.S4 ~1500), which would let large-valued variables dominate
+%     distance- and gradient-based methods. Parameters are computed once
+%     (zscoreFit) and applied separately (zscoreApply), so that a future model
+%     can fit them on the training set only.
+modelVars = setdiff(Tl.Properties.VariableNames(2:end), {target}, 'stable');
+P  = L.zscoreFit(Tl, modelVars);
+Tz = L.zscoreApply(Tl, P);
+
+Dz = L.describeVars(Tz(:, modelVars));
+disp(table(round(P.Mean, 3), round(P.Std, 3), Dz.Mean, Dz.Std, Dz.Min, Dz.Max, ...
+    'RowNames', modelVars, ...
+    'VariableNames', {'MeanBefore', 'StdBefore', 'MeanAfter', 'StdAfter', 'MinAfter', 'MaxAfter'}));
+
+%% 2.7 Save the processed data
+% Tk: complete rows, original units (for EDA and interpretation)
+% Tz: complete rows, log-transformed and standardised inputs, CO in mg/m^3
+% P:  scaling parameters, needed to apply the same scaling to new data
+if ~exist(procDir, 'dir'), mkdir(procDir); end
+writetable(Tk, fullfile(procDir, 'airquality_clean.csv'));
+writetable(Tz, fullfile(procDir, 'airquality_scaled.csv'));
+writetable(P,  fullfile(procDir, 'scaling_params.csv'), 'WriteRowNames', true);
+fprintf('Saved %d rows to %s\n', height(Tk), procDir);
