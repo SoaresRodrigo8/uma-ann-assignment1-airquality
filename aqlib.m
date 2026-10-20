@@ -15,6 +15,7 @@ function L = aqlib()
     L.gapSummary        = @gapSummary;
     L.gapHours          = @gapHours;
     L.dropSparseVars    = @dropSparseVars;
+    L.interpolateGaps   = @interpolateGaps;
 
     % --- EDA plots ---
     L.plotTargetDistribution = @plotTargetDistribution;
@@ -190,6 +191,33 @@ function [T, dropped] = dropSparseVars(T, maxPct, keep)
     pct = 100 * mean(isnan(T{:, vars}));
     dropped = vars(pct > maxPct & ~ismember(vars, keep));
     T = removevars(T, dropped);
+end
+
+function [T, filled] = interpolateGaps(T, vars, maxGap)
+% Fills gaps of at most maxGap consecutive missing hours by linear
+% interpolation in time. Longer gaps and gaps at the ends of the series
+% are left as NaN.
+% Input:  T      - data table with a DateTime column (missing values as NaN)
+%         vars   - cell array of variables to fill (never the target)
+%         maxGap - longest gap, in missing hours, that is filled
+% Output: T      - table with the short gaps filled
+%         filled - logical matrix (rows x vars), true where a value was interpolated
+    filled = false(height(T), numel(vars));
+    for k = 1:numel(vars)
+        x = T.(vars{k});
+
+        % mark the cells that belong to short gaps
+        [r, s] = nanRuns(x);
+        short = false(size(x));
+        for g = find(r <= maxGap)'
+            short(s(g):s(g) + r(g) - 1) = true;
+        end
+
+        xi = fillmissing(x, 'linear', 'SamplePoints', T.DateTime, 'EndValues', 'none');
+        x(short) = xi(short);
+        filled(:, k) = short & ~isnan(x);
+        T.(vars{k}) = x;
+    end
 end
 
 function [r, s] = nanRuns(x)

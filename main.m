@@ -105,3 +105,37 @@ fprintf('Variables before: %d | after: %d\n', width(T) - 1, width(Tc) - 1);
 
 inputPct = M.Percent(~ismember(M.Properties.RowNames, [dropped, {target}]));
 fprintf('Highest %% missing among the remaining inputs: %.2f%%\n', max(inputPct));
+
+%% 2.3 Interpolate short gaps in the input features
+% Linear interpolation in time, only for gaps of at most maxGap hours
+% (mostly the daily 1-hour calibration gaps of NOx/NO2). Long gaps stay NaN.
+% The target is never interpolated: missing CO values are not invented.
+inputVars = setdiff(Tc.Properties.VariableNames(2:end), {target}, 'stable');
+[Ti, filled] = L.interpolateGaps(Tc, inputVars, maxGap);
+
+% Before/after: missing values per variable
+Mb = L.missingSummary(Tc);
+Ma = L.missingSummary(Ti);
+Ma = Ma(Mb.Properties.RowNames, :);
+B = table(Mb.Missing, Ma.Missing, Mb.Missing - Ma.Missing, ...
+    'RowNames', Mb.Properties.RowNames, ...
+    'VariableNames', {'MissingBefore', 'MissingAfter', 'Interpolated'});
+disp(B);
+fprintf('Cells interpolated: %d | target unchanged: %d\n', ...
+    sum(filled, 'all'), isequaln(Tc.(target), Ti.(target)));
+
+% Before/after: the statistics of the inputs should barely change, since
+% only a few isolated hours were filled
+Db = L.describeVars(Tc(:, inputVars));
+Da = L.describeVars(Ti(:, inputVars));
+disp(table(Db.Mean, Da.Mean, Db.Std, Da.Std, 'RowNames', inputVars, ...
+    'VariableNames', {'MeanBefore', 'MeanAfter', 'StdBefore', 'StdAfter'}));
+
+% Why does the NOx/NO2 mean drop? The interpolated hours are mostly at
+% 03:00 (low traffic), so before interpolation night hours were missing
+% more often than day hours and the mean was biased upwards.
+for v = {'NOx(GT)', 'NO2(GT)'}
+    k = find(strcmp(inputVars, v{1}));
+    fprintf('%s: mean of interpolated values %.1f vs mean of measured values %.1f\n', ...
+        v{1}, mean(Ti.(v{1})(filled(:, k))), mean(Tc.(v{1}), 'omitnan'));
+end
