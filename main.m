@@ -149,3 +149,14 @@ show = {'NOx(GT)', 'NO2(GT)'};
 fig = L.plotInterpolation(Tc.DateTime(win), Tc{win, show}, Ti{win, show}, ...
     filled(win, cols), show);
 exportgraphics(fig, fullfile(figDir, 'interpolation_example.pdf'));
+
+% Whole-period view: valid values per hour of the day, before and after.
+% Shows what the interpolation corrects (the systematic 03:00 gap) using all
+% the data, not only the example week above.
+Vb = L.validByHour(Tc, show);
+Va = L.validByHour(Ti, show);
+disp(table(Vb.Hour, Vb.('NOx(GT)'), Va.('NOx(GT)'), Vb.('NO2(GT)'), Va.('NO2(GT)'), ...
+    'VariableNames', {'Hour', 'NOx_before', 'NOx_after', 'NO2_before', 'NO2_after'}));
+
+fig = L.plotHourlyCoverage(Vb, Va, show);
+exportgraphics(fig, fullfile(figDir, 'interpolation_hourly_coverage.pdf'));

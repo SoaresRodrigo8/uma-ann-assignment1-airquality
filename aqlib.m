@@ -14,6 +14,7 @@ function L = aqlib()
     % --- Cleaning and preprocessing ---
     L.gapSummary        = @gapSummary;
     L.gapHours          = @gapHours;
+    L.validByHour       = @validByHour;
     L.dropSparseVars    = @dropSparseVars;
     L.interpolateGaps   = @interpolateGaps;
 
@@ -23,6 +24,7 @@ function L = aqlib()
     L.plotTargetCorrelation  = @plotTargetCorrelation;
     L.plotMissingMap         = @plotMissingMap;
     L.plotInterpolation      = @plotInterpolation;
+    L.plotHourlyCoverage     = @plotHourlyCoverage;
 end
 
 %% ===================== Import and exploration =====================
@@ -178,6 +180,19 @@ function H = gapHours(T, vars, maxLen)
         [r, s] = nanRuns(T.(vars{k}));
         h = hour(T.DateTime(s(r <= maxLen)));
         H.(vars{k}) = histcounts(h, -0.5:1:23.5)';
+    end
+end
+
+function V = validByHour(T, vars)
+% Counts the valid (non-missing) values of each variable per hour of the day.
+% Input:  T    - data table with a DateTime column (missing values as NaN)
+%         vars - cell array of variable names
+% Output: V    - table with Hour (0-23) and one count column per variable
+    h = hour(T.DateTime);
+    V = table((0:23)', 'VariableNames', {'Hour'});
+    for k = 1:numel(vars)
+        ok = ~isnan(T.(vars{k}));
+        V.(vars{k}) = histcounts(h(ok), -0.5:1:23.5)';
     end
 end
 
@@ -340,6 +355,33 @@ function fig = plotInterpolation(t, Xb, Xa, F, names)
                 'Location', 'northoutside', 'Orientation', 'horizontal');
             title('Short-gap interpolation (long gaps are left missing)');
         end
+    end
+end
+
+function fig = plotHourlyCoverage(Vb, Va, names)
+% Grouped bars of the number of valid values per hour of the day,
+% before and after interpolation (whole period).
+% Input:  Vb    - table from validByHour before interpolation
+%         Va    - table from validByHour after interpolation
+%         names - cell array with the variables to show
+% Output: fig   - figure handle
+    n = numel(names);
+    fig = newFigure([100 100 1100 280 * n]);
+    for k = 1:n
+        subplot(n, 1, k);
+        b = bar(Vb.Hour, [Vb.(names{k}), Va.(names{k})], 'grouped', 'EdgeColor', 'none');
+        b(1).FaceColor = [0.18 0.44 0.62];
+        b(2).FaceColor = [0.85 0.15 0.15];
+        xlim([-0.5 23.5]);
+        set(gca, 'XTick', 0:23);
+        ylabel(['Valid hours, ' names{k}], 'Interpreter', 'none');
+        grid on;
+        if k == 1
+            legend({'Before interpolation', 'After interpolation'}, ...
+                'Location', 'northoutside', 'Orientation', 'horizontal');
+            title('Valid values per hour of the day (whole period)');
+        end
+        if k == n, xlabel('Hour of the day'); end
     end
 end
 
