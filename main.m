@@ -7,6 +7,7 @@ rawFile   = fullfile('data', 'Raw', 'AirQualityUCI.csv');
 figDir    = 'Figures';
 target    = 'CO(GT)';
 missCode  = -200;
+maxGap    = 3;      % longest gap (hours) filled by interpolation
 
 if ~exist(figDir, 'dir'), mkdir(figDir); end
 
@@ -54,3 +55,18 @@ disp(C);
 
 fig = L.plotTargetCorrelation(C, target);
 exportgraphics(fig, fullfile(figDir, 'target_correlation.pdf'));
+
+%% 2.1 Missing-value pattern
+% Before choosing an imputation method: do the gaps coincide across
+% variables, and how long are they? Short gaps can be interpolated in time;
+% long gaps (days) cannot be filled credibly without erasing the daily cycle.
+sensorVars = {'PT08.S1(CO)', 'PT08.S2(NMHC)', 'PT08.S3(NOx)', 'PT08.S4(NO2)', ...
+              'PT08.S5(O3)', 'C6H6(GT)', 'T', 'RH', 'AH'};
+sensorMiss = isnan(T{:, sensorVars});
+fprintf('Sensor variables missing on the same rows: %d\n', ...
+    isequal(all(sensorMiss, 2), any(sensorMiss, 2)));
+fprintf('Rows without %s that also miss NOx(GT): %d of %d\n', target, ...
+    sum(isnan(T.(target)) & isnan(T.('NOx(GT)'))), sum(isnan(T.(target))));
+
+G = L.gapSummary(T, maxGap);
+disp(G);

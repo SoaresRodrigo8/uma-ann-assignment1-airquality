@@ -10,6 +10,9 @@ function L = aqlib()
     L.describeVars      = @describeVars;
     L.targetCorrelation = @targetCorrelation;
 
+    % --- Cleaning and preprocessing ---
+    L.gapSummary        = @gapSummary;
+
     % --- EDA plots ---
     L.plotTargetDistribution = @plotTargetDistribution;
     L.plotHistograms         = @plotHistograms;
@@ -117,6 +120,38 @@ function C = targetCorrelation(T, target)
     C.Spearman = round(C.Spearman, 3);
     [~, idx] = sort(abs(C.Spearman), 'descend');
     C = C(idx, :);
+end
+
+%% ===================== Cleaning and preprocessing =====================
+
+function G = gapSummary(T, maxGap)
+% Describes the gaps (runs of consecutive missing hours) of each numeric variable.
+% Input:  T      - data table (missing values as NaN, one row per hour)
+%         maxGap - longest gap, in hours, that is considered short
+% Output: G      - table with number of gaps, median and max gap length,
+%                  number of short gaps and % of missing cells in short gaps
+    vars = T.Properties.VariableNames(varfun(@isnumeric, T, 'OutputFormat', 'uniform'));
+    n = numel(vars);
+    g = zeros(n, 5);
+    for k = 1:n
+        r = nanRuns(T.(vars{k}));
+        if isempty(r), continue; end
+        short = r <= maxGap;
+        g(k, :) = [numel(r), median(r), max(r), sum(short), ...
+                   100 * sum(r(short)) / sum(r)];
+    end
+    G = array2table(g, 'RowNames', vars, 'VariableNames', ...
+        {'Gaps', 'MedianLen', 'MaxLen', 'ShortGaps', 'ShortCellsPct'});
+    G.ShortCellsPct = round(G.ShortCellsPct, 1);
+    G = sortrows(G, 'Gaps', 'descend');
+end
+
+function r = nanRuns(x)
+% Lengths of the runs of consecutive NaN in a vector.
+% Input:  x - numeric vector
+% Output: r - column vector with the length of each run (empty if none)
+    d = diff([0; isnan(x(:)); 0]);
+    r = find(d == -1) - find(d == 1);
 end
 
 %% ===================== EDA plots =====================
