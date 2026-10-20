@@ -22,6 +22,7 @@ function L = aqlib()
     L.plotHistograms         = @plotHistograms;
     L.plotTargetCorrelation  = @plotTargetCorrelation;
     L.plotMissingMap         = @plotMissingMap;
+    L.plotInterpolation      = @plotInterpolation;
 end
 
 %% ===================== Import and exploration =====================
@@ -311,6 +312,35 @@ function fig = plotMissingMap(T)
         'YTick', 1:numel(vars), 'YTickLabel', vars, 'TickLabelInterpreter', 'none');
     xlabel('Time');
     title('Missing values over time (red = missing)');
+end
+
+function fig = plotInterpolation(t, Xb, Xa, F, names)
+% Before/after view of the interpolation: measured values as a line,
+% interpolated values as red markers, long gaps left as breaks.
+% Input:  t     - datetime vector of the window to show
+%         Xb    - values before interpolation (rows x variables)
+%         Xa    - values after interpolation (rows x variables)
+%         F     - logical matrix, true where a value was interpolated
+%         names - cell array with the variable names
+% Output: fig   - figure handle
+    n = numel(names);
+    fig = newFigure([100 100 1100 280 * n]);
+    for k = 1:n
+        subplot(n, 1, k);
+        plot(t, Xa(:, k), ':', 'Color', [0.85 0.15 0.15], 'LineWidth', 1);
+        hold on;
+        plot(t, Xb(:, k), '-', 'Color', [0.18 0.44 0.62], 'LineWidth', 1.2);
+        plot(t(F(:, k)), Xa(F(:, k), k), 'o', 'MarkerSize', 6, ...
+            'MarkerFaceColor', [0.85 0.15 0.15], 'MarkerEdgeColor', 'none');
+        hold off;
+        ylabel(names{k}, 'Interpreter', 'none');
+        grid on;
+        if k == 1
+            legend({'After interpolation', 'Measured', 'Interpolated value'}, ...
+                'Location', 'northoutside', 'Orientation', 'horizontal');
+            title('Short-gap interpolation (long gaps are left missing)');
+        end
+    end
 end
 
 function fig = newFigure(pos)

@@ -139,3 +139,13 @@ for v = {'NOx(GT)', 'NO2(GT)'}
     fprintf('%s: mean of interpolated values %.1f vs mean of measured values %.1f\n', ...
         v{1}, mean(Ti.(v{1})(filled(:, k))), mean(Tc.(v{1}), 'omitnan'));
 end
+
+% Before/after plot for one week (Mon 8 - Sun 14 Nov 2004), chosen because it
+% contains both cases: daily 1-hour gaps that are filled and a long gap that
+% is deliberately left missing.
+win  = Tc.DateTime >= datetime(2004, 11, 8) & Tc.DateTime < datetime(2004, 11, 15);
+show = {'NOx(GT)', 'NO2(GT)'};
+[~, cols] = ismember(show, inputVars);   % column of each shown variable in 'filled'
+fig = L.plotInterpolation(Tc.DateTime(win), Tc{win, show}, Ti{win, show}, ...
+    filled(win, cols), show);
+exportgraphics(fig, fullfile(figDir, 'interpolation_example.pdf'));
