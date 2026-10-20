@@ -3,11 +3,12 @@
 
 L = aqlib();
 
-rawFile   = fullfile('data', 'Raw', 'AirQualityUCI.csv');
-figDir    = 'Figures';
-target    = 'CO(GT)';
-missCode  = -200;
-maxGap    = 3;      % longest gap (hours) filled by interpolation
+rawFile    = fullfile('data', 'Raw', 'AirQualityUCI.csv');
+figDir     = 'Figures';
+target     = 'CO(GT)';
+missCode   = -200;
+maxGap     = 3;     % longest gap (hours) filled by interpolation
+maxMissPct = 50;    % variables with more missing values than this are removed
 
 if ~exist(figDir, 'dir'), mkdir(figDir); end
 
@@ -93,3 +94,14 @@ disp(S);
 % A single dominant hour points to a systematic cause (daily calibration).
 H = L.gapHours(T, {target, 'NOx(GT)', 'NO2(GT)'}, 1);
 disp(H(any(H{:, 2:end} > 0, 2), :));
+
+%% 2.2 Remove variables with too many missing values
+% A variable that is mostly missing cannot be imputed without inventing most
+% of it. NMHC(GT) is the only one above the limit (90%); the next worst input
+% has ~18%, so any limit between ~20% and 90% gives the same result.
+[Tc, dropped] = L.dropSparseVars(T, maxMissPct, {target});
+fprintf('Removed (> %d%% missing): %s\n', maxMissPct, strjoin(dropped, ', '));
+fprintf('Variables before: %d | after: %d\n', width(T) - 1, width(Tc) - 1);
+
+inputPct = M.Percent(~ismember(M.Properties.RowNames, [dropped, {target}]));
+fprintf('Highest %% missing among the remaining inputs: %.2f%%\n', max(inputPct));

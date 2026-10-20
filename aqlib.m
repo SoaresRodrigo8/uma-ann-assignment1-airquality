@@ -14,6 +14,7 @@ function L = aqlib()
     % --- Cleaning and preprocessing ---
     L.gapSummary        = @gapSummary;
     L.gapHours          = @gapHours;
+    L.dropSparseVars    = @dropSparseVars;
 
     % --- EDA plots ---
     L.plotTargetDistribution = @plotTargetDistribution;
@@ -176,6 +177,19 @@ function H = gapHours(T, vars, maxLen)
         h = hour(T.DateTime(s(r <= maxLen)));
         H.(vars{k}) = histcounts(h, -0.5:1:23.5)';
     end
+end
+
+function [T, dropped] = dropSparseVars(T, maxPct, keep)
+% Removes the numeric variables with more than maxPct % of missing values.
+% Input:  T       - data table (missing values as NaN)
+%         maxPct  - maximum % of missing values allowed
+%         keep    - cell array of variables never removed (e.g. the target)
+% Output: T       - table without the sparse variables
+%         dropped - cell array with the names of the removed variables
+    vars = T.Properties.VariableNames(varfun(@isnumeric, T, 'OutputFormat', 'uniform'));
+    pct = 100 * mean(isnan(T{:, vars}));
+    dropped = vars(pct > maxPct & ~ismember(vars, keep));
+    T = removevars(T, dropped);
 end
 
 function [r, s] = nanRuns(x)
