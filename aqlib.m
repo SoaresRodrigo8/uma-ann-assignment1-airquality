@@ -33,6 +33,7 @@ function L = aqlib()
     L.plotHourlyCoverage     = @plotHourlyCoverage;
     L.plotBoxplots           = @plotBoxplots;
     L.plotTransformHist      = @plotTransformHist;
+    L.plotFeatureVsTarget    = @plotFeatureVsTarget;
 end
 
 %% ===================== Import and exploration =====================
@@ -522,6 +523,58 @@ function fig = plotTransformHist(Xb, Xa, namesB, namesA)
         title(sprintf('%s  (skewness = %.2f)', namesA{k}, skewness(Xa(:, k))), ...
             'Interpreter', 'none');
     end
+end
+
+function fig = plotFeatureVsTarget(T, vars, target, group, groupNames)
+% Scatter of each input against the target, coloured by group (e.g. time
+% period), with the median of the target in quantile bins of the input.
+% Input:  T          - data table
+%         vars       - cell array of input names
+%         target     - name of the target
+%         group      - logical vector, splits the rows in two groups
+%         groupNames - 1x2 cell array with the legend names {false, true}
+% Output: fig        - figure handle
+    colors = [0.18 0.44 0.62; 0.85 0.15 0.15];
+    n  = numel(vars);
+    nc = 4;
+    nr = ceil(n / nc);
+    fig = newFigure([50 50 1400 300 * nr]);
+    y = T.(target);
+    for k = 1:n
+        subplot(nr, nc, k);
+        x = T.(vars{k});
+        hold on;
+        for g = 0:1
+            idx = group == g;
+            scatter(x(idx), y(idx), 3, colors(g + 1, :), 'filled', ...
+                'MarkerFaceAlpha', 0.15, 'HandleVisibility', 'off');
+        end
+        for g = 0:1
+            idx = group == g;
+            [xc, ym] = binnedMedian(x(idx), y(idx), 15);
+            plot(xc, ym, '-o', 'Color', colors(g + 1, :) * 0.7, 'LineWidth', 2, ...
+                'MarkerSize', 3, 'MarkerFaceColor', colors(g + 1, :) * 0.7);
+        end
+        hold off;
+        grid on;
+        xlabel(vars{k}, 'Interpreter', 'none');
+        if mod(k, nc) == 1, ylabel(target, 'Interpreter', 'none'); end
+        if k == 1, legend(groupNames, 'Location', 'northwest'); end
+    end
+end
+
+function [xc, ym] = binnedMedian(x, y, nBins)
+% Median of y inside quantile bins of x (each bin has ~the same number of points).
+% Input:  x, y  - vectors of the same length
+%         nBins - number of bins
+% Output: xc    - median of x in each bin (bin position)
+%         ym    - median of y in each bin
+    edges = unique(prctile(x, linspace(0, 100, nBins + 1)));
+    b  = discretize(x, edges);
+    ok = ~isnan(b);
+    g  = findgroups(b(ok));          % renumber the non-empty bins 1..k
+    xc = splitapply(@median, x(ok), g);
+    ym = splitapply(@median, y(ok), g);
 end
 
 function fig = newFigure(pos)

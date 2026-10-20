@@ -11,6 +11,7 @@ maxGap     = 3;     % longest gap (hours) filled by interpolation
 maxMissPct = 50;    % variables with more missing values than this are removed
 skewThr    = 1;     % inputs with |skewness| above this are log-transformed
 procDir    = fullfile('data', 'Processed');
+shiftDate  = datetime(2004, 9, 1);   % NOx(GT) level shift found in 2.5
 
 if ~exist(figDir, 'dir'), mkdir(figDir); end
 
@@ -276,3 +277,39 @@ writetable(Tk, fullfile(procDir, 'airquality_clean.csv'));
 writetable(Tz, fullfile(procDir, 'airquality_scaled.csv'));
 writetable(P,  fullfile(procDir, 'scaling_params.csv'), 'WriteRowNames', true);
 fprintf('Saved %d rows to %s\n', height(Tk), procDir);
+
+%% 3.1 Each input against the target
+% Original units (Tk), so that the relations can be read physically. The
+% points are split in the two periods found in 2.5 (before/after the NOx
+% level shift) to see which relations with CO stay stable over time. The
+% line is the median CO in 15 quantile bins of the input: it shows the shape
+% of the relation (linear, curved, flat) without assuming any model.
+late = Tk.DateTime >= shiftDate;
+periodNames = {'Mar-Aug 2004', 'Sep 2004-Apr 2005'};
+fig = L.plotFeatureVsTarget(Tk, inputVars, target, late, periodNames);
+exportgraphics(fig, fullfile(figDir, 'features_vs_target.pdf'), ...
+    'ContentType', 'image', 'Resolution', 200);
+
+% The same relations as numbers: Spearman correlation with CO per period
+Ce = L.targetCorrelation(Tk(~late, [{'DateTime', target}, inputVars]), target);
+Cl = L.targetCorrelation(Tk(late,  [{'DateTime', target}, inputVars]), target);
+Cl = Cl(Ce.Properties.RowNames, :);
+disp(table(Ce.Spearman, Cl.Spearman, Cl.Spearman - Ce.Spearman, Ce.Pearson, Cl.Pearson, ...
+    'RowNames', Ce.Properties.RowNames, ...
+    'VariableNames', {'SpearmanEarly', 'SpearmanLate', 'Change', 'PearsonEarly', 'PearsonLate'}));
+fprintf('Rows: early %d | late %d\n', sum(~late), sum(late));
+
+% The two periods are also different seasons, so a change between them may
+% be seasonal. Control for both season and CO level: compare spring 2004 with
+% spring 2005 (Mar-Apr) at the same CO level (1.5-2.5 mg/m^3). An input that
+% still changes points to a change in the instrument (drift/recalibration).
+mo  = Tk.DateTime.Month;   % (property, because 'month' is a variable above)
+yr  = Tk.DateTime.Year;
+mid = Tk.(target) >= 1.5 & Tk.(target) <= 2.5;
+s04 = ismember(mo, [3 4]) & yr == 2004 & mid;
+s05 = ismember(mo, [3 4]) & yr == 2005 & mid;
+a = varfun(@median, Tk(s04, inputVars));
+b = varfun(@median, Tk(s05, inputVars));
+disp(table(a{1, :}', b{1, :}', round(100 * (b{1, :} - a{1, :}) ./ a{1, :})', ...
+    'RowNames', inputVars, 'VariableNames', {'Spring2004', 'Spring2005', 'PctChange'}));
+fprintf('Rows with CO in [1.5, 2.5]: spring 2004 %d | spring 2005 %d\n', sum(s04), sum(s05));
