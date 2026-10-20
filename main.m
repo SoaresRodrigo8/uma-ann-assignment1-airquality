@@ -160,3 +160,32 @@ disp(table(Vb.Hour, Vb.('NOx(GT)'), Va.('NOx(GT)'), Vb.('NO2(GT)'), Va.('NO2(GT)
 
 fig = L.plotHourlyCoverage(Vb, Va, show);
 exportgraphics(fig, fullfile(figDir, 'interpolation_hourly_coverage.pdf'));
+
+%% 2.4 Keep only complete rows (target and all inputs present)
+% Rows without the target cannot be used to relate inputs to CO, and the
+% target is never invented. Rows with a long gap in an input are also
+% excluded instead of filling days of data. Rows are marked, not deleted:
+% Ti stays hourly (needed for lag features); analyses use Tk = Ti(keep, :).
+keep = L.completeRows(Ti, [{target}, inputVars]);
+Tk   = Ti(keep, :);
+
+noTarget = isnan(Ti.(target));
+noInput  = any(isnan(Ti{:, inputVars}), 2);
+fprintf('Rows before: %d | kept: %d (%.1f%%) | excluded: %d\n', ...
+    height(Ti), sum(keep), 100 * mean(keep), sum(~keep));
+fprintf('  only target missing: %d | only inputs missing: %d | both: %d\n', ...
+    sum(noTarget & ~noInput), sum(~noTarget & noInput), sum(noTarget & noInput));
+
+% Is the kept subset still representative of the target?
+% Compare CO over all hours where it was measured vs the kept rows only.
+Dall  = L.describeVars(Ti(~noTarget, {target}));
+Dkeep = L.describeVars(Tk(:, {target}));
+Dall.Properties.RowNames  = {'CO, all measured hours'};
+Dkeep.Properties.RowNames = {'CO, kept rows'};
+disp([Dall; Dkeep]);
+
+% Rows kept per month: does the exclusion remove whole periods?
+[g, month] = findgroups(dateshift(Ti.DateTime, 'start', 'month'));
+month.Format = 'MMM yyyy';
+disp(table(month, splitapply(@sum, keep, g), round(100 * splitapply(@mean, keep, g), 1), ...
+    'VariableNames', {'Month', 'RowsKept', 'PctKept'}));

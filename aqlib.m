@@ -17,6 +17,7 @@ function L = aqlib()
     L.validByHour       = @validByHour;
     L.dropSparseVars    = @dropSparseVars;
     L.interpolateGaps   = @interpolateGaps;
+    L.completeRows      = @completeRows;
 
     % --- EDA plots ---
     L.plotTargetDistribution = @plotTargetDistribution;
@@ -234,6 +235,15 @@ function [T, filled] = interpolateGaps(T, vars, maxGap)
         filled(:, k) = short & ~isnan(x);
         T.(vars{k}) = x;
     end
+end
+
+function keep = completeRows(T, vars)
+% Marks the rows that have a valid value in every one of the given variables.
+% Rows are not removed here, so the hourly table stays intact for lag features.
+% Input:  T    - data table (missing values as NaN)
+%         vars - cell array of variables that must be present
+% Output: keep - logical column vector, true for complete rows
+    keep = ~any(isnan(T{:, vars}), 2);
 end
 
 function [r, s] = nanRuns(x)
