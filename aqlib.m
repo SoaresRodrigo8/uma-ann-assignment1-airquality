@@ -18,6 +18,8 @@ function L = aqlib()
     L.dropSparseVars    = @dropSparseVars;
     L.interpolateGaps   = @interpolateGaps;
     L.completeRows      = @completeRows;
+    L.outlierSummary    = @outlierSummary;
+    L.outlierCooccurrence = @outlierCooccurrence;
 
     % --- EDA plots ---
     L.plotTargetDistribution = @plotTargetDistribution;
@@ -26,6 +28,7 @@ function L = aqlib()
     L.plotMissingMap         = @plotMissingMap;
     L.plotInterpolation      = @plotInterpolation;
     L.plotHourlyCoverage     = @plotHourlyCoverage;
+    L.plotBoxplots           = @plotBoxplots;
 end
 
 %% ===================== Import and exploration =====================
@@ -246,6 +249,46 @@ function keep = completeRows(T, vars)
     keep = ~any(isnan(T{:, vars}), 2);
 end
 
+function [S, O] = outlierSummary(T, vars, k)
+% Flags outliers with Tukey's rule: below Q1 - k*IQR or above Q3 + k*IQR.
+% Input:  T    - data table
+%         vars - cell array of variable names
+%         k    - fence multiplier (1.5 is the usual choice)
+% Output: S    - table with fences, number of low/high outliers and %
+%         O    - logical matrix (rows x vars), true where a value is an outlier
+    n = numel(vars);
+    s = zeros(n, 6);
+    O = false(height(T), n);
+    for j = 1:n
+        x = T.(vars{j});
+        q = prctile(x, [25 75]);
+        lo = q(1) - k * (q(2) - q(1));
+        hi = q(2) + k * (q(2) - q(1));
+        O(:, j) = x < lo | x > hi;
+        s(j, :) = [lo, hi, sum(x < lo), sum(x > hi), sum(O(:, j)), ...
+                   100 * sum(O(:, j)) / sum(~isnan(x))];
+    end
+    S = array2table(round(s, 2), 'RowNames', vars, 'VariableNames', ...
+        {'LowerFence', 'UpperFence', 'NLow', 'NHigh', 'N', 'Pct'});
+end
+
+function C = outlierCooccurrence(O, names)
+% For each variable, % of its outlier hours in which at least one of the
+% other variables is also an outlier. High values point to real pollution
+% episodes (several pollutants rise together) rather than sensor errors.
+% Input:  O     - logical outlier matrix (rows x vars), from outlierSummary
+%         names - cell array with the names of the columns of O
+% Output: C     - table with N outliers and % shared with another variable
+    n = numel(names);
+    c = zeros(n, 2);
+    for j = 1:n
+        others = any(O(:, setdiff(1:n, j)), 2);
+        c(j, :) = [sum(O(:, j)), 100 * mean(others(O(:, j)))];
+    end
+    C = array2table(c, 'RowNames', names, 'VariableNames', {'N', 'PctWithOther'});
+    C.PctWithOther = round(C.PctWithOther, 1);
+end
+
 function [r, s] = nanRuns(x)
 % Lengths and start positions of the runs of consecutive NaN in a vector.
 % Input:  x - numeric vector
@@ -393,6 +436,25 @@ function fig = plotHourlyCoverage(Vb, Va, names)
         end
         if k == n, xlabel('Hour of the day'); end
     end
+end
+
+function fig = plotBoxplots(T, vars)
+% Boxplots of several variables side by side. Each variable is standardised
+% (z-score) for display only, so that variables with different units fit on
+% the same axis; the data themselves are not changed.
+% Input:  T    - data table
+%         vars - cell array of variable names
+% Output: fig  - figure handle
+    X = T{:, vars};
+    Z = (X - mean(X, 'omitnan')) ./ std(X, 'omitnan');
+    fig = newFigure([100 100 1100 450]);
+    boxplot(Z, 'Labels', vars, 'Symbol', '.', 'OutlierSize', 4);
+    set(gca, 'TickLabelInterpreter', 'none');
+    xtickangle(30);
+    yline(0, ':k');
+    ylabel('Standardised value (z-score)');
+    title('Distribution and outliers (Tukey fences, 1.5 IQR)');
+    grid on;
 end
 
 function fig = newFigure(pos)

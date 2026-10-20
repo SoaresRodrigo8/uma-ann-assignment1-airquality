@@ -189,3 +189,47 @@ disp([Dall; Dkeep]);
 month.Format = 'MMM yyyy';
 disp(table(month, splitapply(@sum, keep, g), round(100 * splitapply(@mean, keep, g), 1), ...
     'VariableNames', {'Month', 'RowsKept', 'PctKept'}));
+
+%% 2.5 Outliers
+% Identification with Tukey's rule (1.5 IQR) on the complete rows. An
+% outlier is only removed if it is implausible; pollution peaks are real
+% events and are exactly the hours a model of CO must be able to explain.
+allVars = [{target}, inputVars];
+[So, O] = L.outlierSummary(Tk, allVars, 1.5);
+disp(So);
+
+% 1) Physical plausibility: no negative concentrations, RH within 0-100 %
+fprintf('Min of all variables except T: %.3f | RH range: %.1f to %.1f %%\n', ...
+    min(Tk{:, setdiff(allVars, {'T'})}, [], 'all'), min(Tk.RH), max(Tk.RH));
+
+% 2) Do the outliers of one pollutant coincide with outliers of others?
+% (meteorological variables are left out: they are not pollutants)
+polVars = setdiff(allVars, {'T', 'RH', 'AH'}, 'stable');
+[~, iPol] = ismember(polVars, allVars);
+Co = L.outlierCooccurrence(O(:, iPol), polVars);
+
+% Median CO during the outlier hours of each variable (overall median: 1.8).
+% Unlike the co-occurrence, this does not depend on the sign of the relation:
+% PT08.S3(NOx) responds inversely, so its high values mean LOW pollution.
+Co.MedianCO = arrayfun(@(j) median(Tk.(target)(O(:, j))), iPol)';
+disp(Co);
+fprintf('Median CO over all kept rows: %.2f\n', median(Tk.(target)));
+
+% 3) When do the outliers happen? (number per month, CO and NOx)
+[g, month] = findgroups(dateshift(Tk.DateTime, 'start', 'month'));
+month.Format = 'MMM yyyy';
+iNOx = find(strcmp(allVars, 'NOx(GT)'));
+disp(table(month, splitapply(@sum, keep(keep), g), splitapply(@sum, O(:, 1), g), ...
+    splitapply(@sum, O(:, iNOx), g), ...
+    'VariableNames', {'Month', 'Rows', 'CO_outliers', 'NOx_outliers'}));
+
+% NOx has no outliers from Mar to Aug 2004 but many in Mar 2005 (same
+% month, other year): check whether the NOx level itself changed over time,
+% using monthly medians of NOx, CO and their ratio.
+medNOx = splitapply(@median, Tk.('NOx(GT)'), g);
+medCO  = splitapply(@median, Tk.(target), g);
+disp(table(month, medCO, medNOx, round(medNOx ./ medCO), ...
+    'VariableNames', {'Month', 'MedianCO', 'MedianNOx', 'NOx_per_CO'}));
+
+fig = L.plotBoxplots(Tk, allVars);
+exportgraphics(fig, fullfile(figDir, 'outliers_boxplots.pdf'));
