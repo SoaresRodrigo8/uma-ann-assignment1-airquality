@@ -8,9 +8,9 @@ Explorar, limpar, transformar e criar features a partir do dataset UCI Air Quali
 
 ## Grupo
 
-|     Nome       | Número de aluno |
-| Rodrigo Soares |     2075526     |
-|                |                 |
+|      Nome       | Número de aluno |
+| Rodrigo Soares  |     2075526     |
+| Leonardo Caneco |     2048726     |
 
 
 ## Dataset
@@ -45,9 +45,9 @@ Abrir a pasta do repositório no MATLAB como pasta atual e correr o `main.m`. Ca
 
 ## Passos do trabalho
 
-- [ ] **1. Importação e exploração dos dados:** descrição do dataset, valores em falta, distribuição da variável alvo, estatísticas de cada variável, correlação com a variável alvo, tabela resumo.
-- [ ] **2. Limpeza e pré-processamento:** identificação de valores em falta e anómalos, imputação, clipping, escalamento, comparações antes/depois.
-- [ ] **3. Análise exploratória (EDA):** gráficos que relacionam as entradas com a variável alvo, assimetria, outliers, relações lineares, redundância.
+- [x] **1. Importação e exploração dos dados:** descrição do dataset, valores em falta, distribuição da variável alvo, estatísticas de cada variável, correlação com a variável alvo, tabela resumo.
+- [x] **2. Limpeza e pré-processamento:** identificação de valores em falta e anómalos, imputação, clipping, escalamento, comparações antes/depois.
+- [x] **3. Análise exploratória (EDA):** gráficos que relacionam as entradas com a variável alvo, assimetria, outliers, relações lineares, redundância.
 - [ ] **4. Seleção de features:** análise de redundância, critérios de seleção, subconjunto final de features justificado.
 - [ ] **5. Engenharia de features:** pelo menos duas features novas, visualização, avaliação da sua utilidade.
 

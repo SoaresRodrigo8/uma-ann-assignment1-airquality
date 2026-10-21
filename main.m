@@ -37,6 +37,10 @@ set(groot, "defaultAxesFontSize", 14, "defaultAxesTickDir", "out", ...
     "defaultAxesBox", "off", "defaultAxesXGrid", "on", "defaultAxesYGrid", "on", ...
     "defaultAxesGridAlpha", 0.15, "defaultFigureColor", "w");
 
+% Light figures even when MATLAB uses a dark theme
+s = settings;
+s.matlab.appearance.figure.GraphicsTheme.TemporaryValue = "light";
+
 % -------------------------------------------------------------------------
 % Column lists
 % -------------------------------------------------------------------------
