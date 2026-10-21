@@ -39,6 +39,7 @@ function L = aqlib()
     L.featureRelevance = @featureRelevance;
     L.plotRelevance    = @plotRelevance;
     L.correlationClusters = @correlationClusters;
+    L.plotCorrClusters    = @plotCorrClusters;
 end
 
 %% ===================== Import and exploration =====================
@@ -736,6 +737,65 @@ function C = correlationClusters(T, feats, minCorr)
     C.Z = linkage(D, "complete");
     C.order = optimalleaforder(C.Z, D);
     C.groups = cluster(C.Z, "Cutoff", 1 - minCorr, "Criterion", "distance");
+end
+
+function fig = plotCorrClusters(C, names, minCorr)
+% Dendrogram of the feature clustering (top) aligned with the heatmap of the
+% Spearman matrix in the same order (bottom). The cut that defines the
+% groups of redundant features is marked on the dendrogram.
+% Input:  C       - struct from correlationClusters
+%         names   - string array with the feature names
+%         minCorr - |rho| used to cut the tree
+% Output: fig     - figure handle
+    P = palette();
+    n = numel(names);
+    names = names(C.order);
+    R = C.R(C.order, C.order);
+
+    fig = newFigure([100 50 1000 1050]);
+    tl = tiledlayout(fig, 4, 1, "TileSpacing", "compact", "Padding", "compact");
+
+    % Dendrogram, with the height shown as |rho| (1 - distance)
+    axD = nexttile(tl);
+    h = dendrogram(C.Z, 0, "Reorder", C.order);
+    set(h, "Color", P.navy, "LineWidth", 1.5);
+    hold(axD, "on");
+    yline(axD, 1 - minCorr, "--", sprintf("|\\rho| = %.2f", minCorr), "Color", P.red, ...
+        "LineWidth", 1.2, "LabelHorizontalAlignment", "left", "FontSize", 11);
+    xlim(axD, [0.5 n + 0.5]);
+    axD.XTick = [];
+    axD.XGrid = "off";
+    yt = 0:0.2:1;
+    axD.YTick = yt;
+    axD.YTickLabel = compose("%.1f", 1 - yt);
+    ylabel(axD, "|\rho| at which groups join");
+    title(axD, "Redundancy between features (Spearman, complete linkage)", "FontWeight", "bold");
+
+    % Heatmap of the correlation matrix, values written in each cell
+    axH = nexttile(tl, [3 1]);
+    imagesc(axH, R);
+    t = linspace(0, 1, 128)';
+    cmap = [P.blue + (1 - P.blue) .* t; 1 - (1 - P.red) .* t];   % blue - white - red
+    colormap(axH, cmap);
+    clim(axH, [-1 1]);
+    cb = colorbar(axH);
+    cb.Layout.Tile = "east";
+    cb.Label.String = "Spearman \rho";
+    for i = 1:n
+        for j = 1:n
+            if abs(R(i, j)) > 0.6, tc = "w"; else, tc = "k"; end
+            text(axH, j, i, sprintf("%.2f", R(i, j)), "HorizontalAlignment", "center", ...
+                "FontSize", 10, "Color", tc);
+        end
+    end
+    axH.XTick = 1:n;
+    axH.YTick = 1:n;
+    axH.XTickLabel = cellstr(names);
+    axH.YTickLabel = cellstr(names);
+    axH.XTickLabelRotation = 45;
+    axH.XGrid = "off";
+    axH.YGrid = "off";
+    axH.TickLength = [0 0];
 end
 
 function mi = mutualInfo(x, y, nBins)

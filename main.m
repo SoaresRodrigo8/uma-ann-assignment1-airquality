@@ -247,6 +247,9 @@ exportgraphics(fig, fullfile(fig_dir, "feature_relevance.pdf"), "ContentType", "
 min_corr = 0.9;
 cc = L.correlationClusters(eda, feature_cols, min_corr);
 
+fig = L.plotCorrClusters(cc, feature_cols, min_corr);
+exportgraphics(fig, fullfile(fig_dir, "correlation_clusters.pdf"), "ContentType", "vector");
+
 ord = feature_cols(cc.order);               % similar features next to each other
 disp(array2table(round(cc.R(cc.order, cc.order), 2), ...
     'RowNames', cellstr(ord), 'VariableNames', cellstr(ord)))
