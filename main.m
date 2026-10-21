@@ -239,3 +239,29 @@ fprintf("MI expected for independent variables: %.3f bits\n", mi_bias);
 
 fig = L.plotRelevance(rel, target_col, mi_bias);
 exportgraphics(fig, fullfile(fig_dir, "feature_relevance.pdf"), "ContentType", "vector");
+
+%% 22. Feature selection: redundancy between features (correlation clusters)
+% Features are grouped by hierarchical clustering with distance 1 - |rho|
+% (Spearman). Complete linkage: a group only forms if EVERY pair inside it
+% has |rho| >= min_corr, so each group is a set of mutually redundant features.
+min_corr = 0.9;
+cc = L.correlationClusters(eda, feature_cols, min_corr);
+
+ord = feature_cols(cc.order);               % similar features next to each other
+disp(array2table(round(cc.R(cc.order, cc.order), 2), ...
+    'RowNames', cellstr(ord), 'VariableNames', cellstr(ord)))
+
+% Sensitivity of the groups to the threshold: which groups form as the
+% required |rho| is lowered (min_corr = 0.9 is the one used in the decision)
+for t = [0.95 0.90 0.85 0.80]
+    ct = L.correlationClusters(eda, feature_cols, t);
+    fprintf("\nGroups with |rho| >= %.2f between every pair:\n", t);
+    for g = unique(ct.groups)'
+        in_g = ct.groups == g;
+        if sum(in_g) > 1
+            Rg = abs(ct.R(in_g, in_g));
+            fprintf("  %s (lowest |rho| inside: %.3f)\n", ...
+                strjoin(feature_cols(in_g), ", "), min(Rg(:)));
+        end
+    end
+end

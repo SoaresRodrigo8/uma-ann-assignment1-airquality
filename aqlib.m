@@ -38,6 +38,7 @@ function L = aqlib()
     % --- Feature selection ---
     L.featureRelevance = @featureRelevance;
     L.plotRelevance    = @plotRelevance;
+    L.correlationClusters = @correlationClusters;
 end
 
 %% ===================== Import and exploration =====================
@@ -713,6 +714,28 @@ function fig = plotRelevance(R, target, miBias)
     linkaxes([ax1 ax2], "y");
 
     title(tl, "Relevance of each feature for " + target, "FontWeight", "bold", "FontSize", 17);
+end
+
+function C = correlationClusters(T, feats, minCorr)
+% Hierarchical clustering of the features by redundancy, with distance
+% 1 - |Spearman| (the sign does not matter: an inverse relation is also
+% redundant) and complete linkage, so that inside each group every pair of
+% features has |rho| >= minCorr.
+% Input:  T       - data table without missing values
+%         feats   - string array of feature names
+%         minCorr - lowest |rho| between any two features of the same group
+% Output: C       - struct with R (Spearman matrix), Z (linkage tree),
+%                   order (leaf order, similar features next to each other)
+%                   and groups (group number of each feature)
+    R = corr(T{:, feats}, "Type", "Spearman");
+    Dm = 1 - abs(R);
+    Dm = (Dm + Dm') / 2;                    % exactly symmetric
+    Dm(1:size(Dm, 1) + 1:end) = 0;          % exactly zero diagonal
+    D = squareform(Dm);
+    C.R = R;
+    C.Z = linkage(D, "complete");
+    C.order = optimalleaforder(C.Z, D);
+    C.groups = cluster(C.Z, "Cutoff", 1 - minCorr, "Criterion", "distance");
 end
 
 function mi = mutualInfo(x, y, nBins)
