@@ -280,6 +280,9 @@ for t = [80 90 95]
     fprintf("Components for %d%% of the variance: %d\n", t, find(pc.cumulative >= t, 1));
 end
 
+fig = L.plotPCA(pc, feature_cols, 90);
+exportgraphics(fig, fullfile(fig_dir, "pca.pdf"), "ContentType", "vector");
+
 % Loadings: which features each component is made of. The first three
 % carry most of the variance; the last one (eigenvalue close to 0) is a
 % combination of features that is almost constant, i.e. a redundancy.

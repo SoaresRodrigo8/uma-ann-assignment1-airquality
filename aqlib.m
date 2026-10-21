@@ -41,6 +41,7 @@ function L = aqlib()
     L.correlationClusters = @correlationClusters;
     L.plotCorrClusters    = @plotCorrClusters;
     L.pcaAnalysis         = @pcaAnalysis;
+    L.plotPCA             = @plotPCA;
 end
 
 %% ===================== Import and exploration =====================
@@ -818,6 +819,67 @@ function P = pcaAnalysis(T, feats)
     P.explained = 100 * P.eigval / sum(P.eigval);   % (4) % of the total variance
     P.cumulative = cumsum(P.explained);
     P.score = Z * V;
+end
+
+function fig = plotPCA(P, names, threshold)
+% Two panels: scree plot (variance explained by each component, with the
+% cumulative curve and the threshold used to choose the number of
+% components) and loadings of each feature on the first two components.
+% Input:  P         - struct from pcaAnalysis
+%         names     - string array with the feature names
+%         threshold - cumulative explained variance (%) to mark
+% Output: fig       - figure handle
+    C = palette();
+    n = numel(P.eigval);
+
+    fig = newFigure([100 100 1400 600]);
+    tl = tiledlayout(fig, 1, 2, "TileSpacing", "compact", "Padding", "compact");
+
+    % Scree plot
+    ax1 = nexttile(tl); hold(ax1, "on");
+    bar(ax1, 1:n, P.explained, 0.6, "FaceColor", C.blue, "EdgeColor", "none", ...
+        "DisplayName", "Explained by the component");
+    plot(ax1, 1:n, P.cumulative, "-o", "Color", C.red, "LineWidth", 2, ...
+        "MarkerFaceColor", C.red, "MarkerSize", 5, "DisplayName", "Cumulative");
+    yline(ax1, threshold, "--", sprintf("%d%%", threshold), "Color", C.grey, ...
+        "LineWidth", 1.2, "HandleVisibility", "off", "LabelHorizontalAlignment", "right");
+    xlim(ax1, [0.4 n + 0.6]);
+    ylim(ax1, [0 105]);
+    ax1.XTick = 1:n;
+    ax1.XGrid = "off";
+    xlabel(ax1, "Principal component");
+    ylabel(ax1, "Variance explained (%)");
+    legend(ax1, "Box", "off", "Location", "east");
+    title(ax1, "Scree plot", "FontWeight", "bold");
+
+    % Loadings on PC1 and PC2: one arrow per feature
+    ax2 = nexttile(tl); hold(ax2, "on");
+    xy = P.coeff(:, 1:2);
+    for j = 1:n
+        plot(ax2, [0 xy(j, 1)], [0 xy(j, 2)], "-", "Color", C.blue, "LineWidth", 1.5);
+        plot(ax2, xy(j, 1), xy(j, 2), "o", "Color", C.blue, ...
+            "MarkerFaceColor", C.blue, "MarkerSize", 5);
+        % two almost equal arrows: label the higher one above, the lower one below
+        d = vecnorm(xy - xy(j, :), 2, 2);
+        d(j) = Inf;
+        [dmin, k] = min(d);
+        va = "middle";
+        if dmin < 0.06
+            if xy(j, 2) >= xy(k, 2), va = "bottom"; else, va = "top"; end
+        end
+        text(ax2, xy(j, 1), xy(j, 2), "  " + names(j), "FontSize", 11, ...
+            "HorizontalAlignment", "left", "VerticalAlignment", va);
+    end
+    xline(ax2, 0, "Color", [0.6 0.6 0.6]);
+    yline(ax2, 0, "Color", [0.6 0.6 0.6]);
+    axis(ax2, "equal");
+    xlim(ax2, [-0.5 0.75]);
+    ylim(ax2, [-0.4 0.7]);
+    xlabel(ax2, sprintf("PC1 (%.1f%% of the variance)", P.explained(1)));
+    ylabel(ax2, sprintf("PC2 (%.1f%% of the variance)", P.explained(2)));
+    title(ax2, "Loadings on the first two components", "FontWeight", "bold");
+
+    title(tl, "Principal component analysis of the features", "FontWeight", "bold", "FontSize", 17);
 end
 
 function mi = mutualInfo(x, y, nBins)
