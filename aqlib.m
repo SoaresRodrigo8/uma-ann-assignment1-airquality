@@ -9,51 +9,52 @@ function L = aqlib()
     L.missingSummary    = @missingSummary;
     L.describeVars      = @describeVars;
     L.targetCorrelation = @targetCorrelation;
-    L.monthlyAvailability = @monthlyAvailability;
+    L.latexTable        = @latexTable;
 
     % --- Cleaning and preprocessing ---
-    L.gapSummary        = @gapSummary;
-    L.gapHours          = @gapHours;
-    L.validByHour       = @validByHour;
-    L.dropSparseVars    = @dropSparseVars;
-    L.interpolateGaps   = @interpolateGaps;
-    L.completeRows      = @completeRows;
-    L.outlierSummary    = @outlierSummary;
-    L.outlierCooccurrence = @outlierCooccurrence;
-    L.logTransform      = @logTransform;
-    L.zscoreFit         = @zscoreFit;
-    L.zscoreApply       = @zscoreApply;
+    L.iqrBounds            = @iqrBounds;
+    L.outlierSummary       = @outlierSummary;
+    L.clipToBounds         = @clipToBounds;
+    L.hourlyIndex          = @hourlyIndex;
+    L.gapStats             = @gapStats;
+    L.interpolateShortGaps = @interpolateShortGaps;
+    L.knnImpute            = @knnImpute;
+    L.zscoreFit            = @zscoreFit;
+    L.zscoreApply          = @zscoreApply;
+    L.compareStats         = @compareStats;
 
     % --- EDA plots ---
     L.plotTargetDistribution = @plotTargetDistribution;
     L.plotHistograms         = @plotHistograms;
+    L.plotSkewGroups         = @plotSkewGroups;
     L.plotTargetCorrelation  = @plotTargetCorrelation;
-    L.plotMissingMap         = @plotMissingMap;
-    L.plotInterpolation      = @plotInterpolation;
-    L.plotHourlyCoverage     = @plotHourlyCoverage;
-    L.plotBoxplots           = @plotBoxplots;
-    L.plotTransformHist      = @plotTransformHist;
-    L.plotFeatureVsTarget    = @plotFeatureVsTarget;
+    L.plotScalingBeforeAfter = @plotScalingBeforeAfter;
+    L.plotFeaturesVsTarget   = @plotFeaturesVsTarget;
+    L.plotScatterByTime      = @plotScatterByTime;
+    L.plotTargetOverTime     = @plotTargetOverTime;
+    L.topCorrelatedPairs     = @topCorrelatedPairs;
+    L.plotPairs              = @plotPairs;
 end
 
 %% ===================== Import and exploration =====================
 
-function T = loadData(filePath)
-% Reads the raw Air Quality CSV (';' separator, ',' decimal).
-% Date and Time are merged into a single DateTime column.
+function df = loadData(filePath, numVars)
+% Reads the raw Air Quality CSV (';' separator, ',' decimal mark), keeping the
+% original column names. The empty trailing columns and the blank rows at the
+% end of the file are dropped, and Date + Time are parsed into Datetime.
 % Input:  filePath - path to AirQualityUCI.csv
-% Output: T        - table with DateTime followed by the numeric variables
-    opts = detectImportOptions(filePath, 'Delimiter', ';', ...
-        'DecimalSeparator', ',', 'VariableNamingRule', 'preserve');
-    opts = setvartype(opts, {'Date', 'Time'}, 'char');
-    T = readtable(filePath, opts);
+%         numVars  - string array with the numeric columns to read
+% Output: df       - table with Date, Time, the numeric columns and Datetime
+    opts = detectImportOptions(filePath, "Delimiter", ";", "VariableNamingRule", "preserve");
+    opts.SelectedVariableNames = ["Date", "Time", numVars];   % drops the empty trailing columns
+    opts = setvartype(opts, ["Date", "Time"], "string");
+    opts = setvartype(opts, numVars, "double");
+    opts = setvaropts(opts, numVars, "DecimalSeparator", ",");
+    df = readtable(filePath, opts);
 
-    % drop trailing empty rows (no date)
-    T = T(~cellfun(@isempty, T.Date), :);
+    df = df(strlength(df.Date) > 0, :);    % remove blank rows at the end of the file
 
-    dt = datetime(strcat(T.Date, {' '}, T.Time), ...
-        'InputFormat', 'dd/MM/yyyy HH.mm.ss');
-    T = [table(dt, 'VariableNames', {'DateTime'}), removevars(T, {'Date', 'Time'})];
+    df.Datetime = datetime(df.Date + " " + df.Time, "InputFormat", "dd/MM/yyyy HH.mm.ss");
 end
 
 function T = markMissing(T, code)
@@ -69,259 +70,199 @@ function T = markMissing(T, code)
     end
 end
 
-function S = checkTimeIndex(dt)
+function S = checkTimeIndex(ts)
 % Checks that the timestamps form a regular hourly series.
-% Input:  dt - datetime vector
-% Output: S  - struct with start, stop, duplicates, sorted flag,
-%              expected and missing hours
-    S.start      = min(dt);
-    S.stop       = max(dt);
-    S.duplicates = numel(dt) - numel(unique(dt));
-    S.sorted     = issorted(dt);
-    fullRange    = (S.start:hours(1):S.stop)';
-    S.expected   = numel(fullRange);
-    S.missing    = numel(setdiff(fullRange, dt));
+% Input:  ts - datetime vector
+% Output: S  - struct with start, stop, duplicates, sorted flag, expected,
+%              present and missing hours, and a table of the steps between rows
+    h = hours(ts - min(ts));
+    S.start      = min(ts);
+    S.stop       = max(ts);
+    S.duplicates = numel(ts) - numel(unique(ts));
+    S.sorted     = issorted(ts);
+    S.expected   = round(max(h)) + 1;
+    S.present    = numel(unique(round(h)));
+    S.missing    = S.expected - S.present;
+    [step_h, ~, ic] = unique(hours(diff(ts)));
+    S.steps = table(step_h, accumarray(ic, 1), 'VariableNames', {'Step_hours', 'Count'});
 end
 
-function M = missingSummary(T)
-% Counts missing values (NaN) per numeric variable.
-% Input:  T - data table (missing values already set to NaN)
-% Output: M - table with Missing count and Percent, sorted descending
-    vars  = T.Properties.VariableNames(varfun(@isnumeric, T, 'OutputFormat', 'uniform'));
-    X     = T{:, vars};
-    count = sum(isnan(X))';
-    pct   = 100 * count / size(X, 1);
-    M = table(count, round(pct, 2), 'VariableNames', {'Missing', 'Percent'}, ...
-        'RowNames', vars);
+function M = missingSummary(T, vars)
+% Counts missing values (NaN) per variable, sorted from most to least missing.
+% Input:  T    - data table (missing values already set to NaN)
+%         vars - string array of variable names
+% Output: M    - table with Missing count and PctMissing (2 decimals)
+    miss = sum(isnan(T{:, vars}))';
+    M = table(miss, round(miss / height(T) * 100, 2), ...
+        'RowNames', cellstr(vars), 'VariableNames', {'Missing', 'PctMissing'});
     M = sortrows(M, 'Missing', 'descend');
 end
 
-function D = describeVars(T)
-% Descriptive statistics of every numeric variable, ignoring NaN.
-% Kurtosis is reported as excess kurtosis (0 for a normal distribution).
-% Input:  T - data table
-% Output: D - table, one row per variable
-    vars = T.Properties.VariableNames(varfun(@isnumeric, T, 'OutputFormat', 'uniform'));
-    n = numel(vars);
-    st = zeros(n, 10);
-    for k = 1:n
-        x = T.(vars{k});
-        x = x(~isnan(x));
-        q = prctile(x, [25 50 75]);
-        st(k, :) = [numel(x), mean(x), std(x), min(x), q, max(x), ...
-                    skewness(x), kurtosis(x) - 3];
-    end
-    D = array2table(round(st, 3), 'RowNames', vars, 'VariableNames', ...
-        {'N', 'Mean', 'Std', 'Min', 'Q1', 'Median', 'Q3', 'Max', 'Skewness', 'Kurtosis'});
+function D = describeVars(T, vars)
+% Descriptive statistics of each variable, ignoring NaN. The skewness is the
+% bias-corrected one (flag 0), the same as pandas.
+% Input:  T    - data table
+%         vars - string array of variable names
+% Output: D    - table with mean, std, min, median, max and skew per variable
+    S = T{:, vars};
+    stats = [mean(S, "omitnan")', std(S, "omitnan")', min(S, [], "omitnan")', ...
+             median(S, "omitnan")', max(S, [], "omitnan")', skewness(S, 0)'];
+    D = array2table(stats, 'RowNames', cellstr(vars), ...
+        'VariableNames', {'mean', 'std', 'min', 'median', 'max', 'skew'});
 end
 
-function C = targetCorrelation(T, target)
-% Pearson and Spearman correlation of every numeric feature with the target,
-% using pairwise complete rows. Sorted by absolute Spearman correlation.
+function rho = targetCorrelation(T, feats, target)
+% Spearman correlation of each feature with the target, using for each
+% feature all rows where both values are present (pairwise).
 % Input:  T      - data table
-%         target - name of the target variable
-% Output: C      - table with Pearson, Spearman and N (pairs used)
-    vars  = T.Properties.VariableNames(varfun(@isnumeric, T, 'OutputFormat', 'uniform'));
-    feats = setdiff(vars, target, 'stable');
-    y = T.(target);
-    n = numel(feats);
-    r = zeros(n, 3);
-    for k = 1:n
-        x  = T.(feats{k});
-        ok = ~isnan(x) & ~isnan(y);
-        r(k, :) = [corr(x(ok), y(ok), 'Type', 'Pearson'), ...
-                   corr(x(ok), y(ok), 'Type', 'Spearman'), sum(ok)];
-    end
-    C = array2table(r, 'RowNames', feats, 'VariableNames', {'Pearson', 'Spearman', 'N'});
-    C.Pearson  = round(C.Pearson, 3);
-    C.Spearman = round(C.Spearman, 3);
-    [~, idx] = sort(abs(C.Spearman), 'descend');
-    C = C(idx, :);
+%         feats  - string array of feature names
+%         target - name of the target
+% Output: rho    - column vector, one correlation per feature
+    rho = corr(T{:, feats}, T.(target), "Type", "Spearman", "Rows", "pairwise");
 end
 
-function A = monthlyAvailability(T)
-% Percentage of hours with a valid value, per month and per variable.
-% Shows when each instrument was working (e.g. NMHC(GT) only early on).
-% Input:  T - data table with a DateTime column (missing values as NaN)
-% Output: A - table with Month and one % column per numeric variable
-    vars = T.Properties.VariableNames(varfun(@isnumeric, T, 'OutputFormat', 'uniform'));
-    [grp, month] = findgroups(dateshift(T.DateTime, 'start', 'month'));
-    month.Format = 'MMM yyyy';
-    A = table(month, 'VariableNames', {'Month'});
-    for k = 1:numel(vars)
-        A.(vars{k}) = round(splitapply(@(x) 100 * mean(~isnan(x)), T.(vars{k}), grp), 1);
+function s = latexTable(rowNames, data, header, caption, label)
+% Builds a booktabs LaTeX table (2 decimals), ready to paste into the report.
+% Input:  rowNames - string array with one name per row
+%         data     - numeric matrix (rows x columns)
+%         header   - string (array) with the header line(s)
+%         caption  - table caption
+%         label    - LaTeX label
+% Output: s        - string with the full table environment
+    s = sprintf("\n\\begin{table}[htbp]\n\\centering\n");
+    s = s + sprintf("\\caption{%s}\n\\label{%s}\n", caption, label);
+    s = s + sprintf("\\begin{tabular}{l%s}\n\\toprule\n", repmat('r', 1, size(data, 2)));
+    s = s + sprintf("%s\n", header);
+    s = s + sprintf("\\midrule\n");
+    for i = 1:size(data, 1)
+        s = s + sprintf("%s & %s \\\\\n", rowNames(i), strjoin(compose("%.2f", data(i, :)), " & "));
     end
+    s = s + sprintf("\\bottomrule\n\\end{tabular}\n\\end{table}\n");
 end
 
 %% ===================== Cleaning and preprocessing =====================
 
-function G = gapSummary(T, maxGap)
-% Describes the gaps (runs of consecutive missing hours) of each numeric variable.
-% Input:  T      - data table (missing values as NaN, one row per hour)
-%         maxGap - longest gap, in hours, that is considered short
-% Output: G      - table with number of gaps, median and max gap length,
-%                  number of short gaps and % of missing cells in short gaps
-    vars = T.Properties.VariableNames(varfun(@isnumeric, T, 'OutputFormat', 'uniform'));
-    n = numel(vars);
-    g = zeros(n, 5);
-    for k = 1:n
-        r = nanRuns(T.(vars{k}));
-        if isempty(r), continue; end
-        short = r <= maxGap;
-        g(k, :) = [numel(r), median(r), max(r), sum(short), ...
-                   100 * sum(r(short)) / sum(r)];
-    end
-    G = array2table(g, 'RowNames', vars, 'VariableNames', ...
-        {'Gaps', 'MedianLen', 'MaxLen', 'ShortGaps', 'ShortCellsPct'});
-    G.ShortCellsPct = round(G.ShortCellsPct, 1);
-    G = sortrows(G, 'Gaps', 'descend');
+function [lo, hi] = iqrBounds(X, k)
+% Tukey fences of each column: Q1 - k*IQR and Q3 + k*IQR (NaN ignored).
+% Input:  X  - numeric matrix (rows x variables)
+%         k  - fence multiplier (1.5 is the usual choice)
+% Output: lo - row vector with the lower bound of each column
+%         hi - row vector with the upper bound of each column
+    q1 = quantile7(X, 0.25);
+    q3 = quantile7(X, 0.75);
+    iqrv = q3 - q1;
+    lo = q1 - k * iqrv;
+    hi = q3 + k * iqrv;
 end
 
-function H = gapHours(T, vars, maxLen)
-% Counts at which hour of the day the short gaps start, to check whether
-% they are random or systematic (e.g. a daily calibration of the analyser).
-% Input:  T      - data table with a DateTime column (missing values as NaN)
-%         vars   - cell array of variable names
-%         maxLen - only gaps with at most this many hours are counted
-% Output: H      - table with Hour (0-23) and one count column per variable
-    H = table((0:23)', 'VariableNames', {'Hour'});
-    for k = 1:numel(vars)
-        [r, s] = nanRuns(T.(vars{k}));
-        h = hour(T.DateTime(s(r <= maxLen)));
-        H.(vars{k}) = histcounts(h, -0.5:1:23.5)';
-    end
-end
-
-function V = validByHour(T, vars)
-% Counts the valid (non-missing) values of each variable per hour of the day.
-% Input:  T    - data table with a DateTime column (missing values as NaN)
-%         vars - cell array of variable names
-% Output: V    - table with Hour (0-23) and one count column per variable
-    h = hour(T.DateTime);
-    V = table((0:23)', 'VariableNames', {'Hour'});
-    for k = 1:numel(vars)
-        ok = ~isnan(T.(vars{k}));
-        V.(vars{k}) = histcounts(h(ok), -0.5:1:23.5)';
-    end
-end
-
-function [T, dropped] = dropSparseVars(T, maxPct, keep)
-% Removes the numeric variables with more than maxPct % of missing values.
-% Input:  T       - data table (missing values as NaN)
-%         maxPct  - maximum % of missing values allowed
-%         keep    - cell array of variables never removed (e.g. the target)
-% Output: T       - table without the sparse variables
-%         dropped - cell array with the names of the removed variables
-    vars = T.Properties.VariableNames(varfun(@isnumeric, T, 'OutputFormat', 'uniform'));
-    pct = 100 * mean(isnan(T{:, vars}));
-    dropped = vars(pct > maxPct & ~ismember(vars, keep));
-    T = removevars(T, dropped);
-end
-
-function [T, filled] = interpolateGaps(T, vars, maxGap)
-% Fills gaps of at most maxGap consecutive missing hours by linear
-% interpolation in time. Longer gaps and gaps at the ends of the series
-% are left as NaN.
-% Input:  T      - data table with a DateTime column (missing values as NaN)
-%         vars   - cell array of variables to fill (never the target)
-%         maxGap - longest gap, in missing hours, that is filled
-% Output: T      - table with the short gaps filled
-%         filled - logical matrix (rows x vars), true where a value was interpolated
-    filled = false(height(T), numel(vars));
-    for k = 1:numel(vars)
-        x = T.(vars{k});
-
-        % mark the cells that belong to short gaps
-        [r, s] = nanRuns(x);
-        short = false(size(x));
-        for g = find(r <= maxGap)'
-            short(s(g):s(g) + r(g) - 1) = true;
-        end
-
-        xi = fillmissing(x, 'linear', 'SamplePoints', T.DateTime, 'EndValues', 'none');
-        x(short) = xi(short);
-        filled(:, k) = short & ~isnan(x);
-        T.(vars{k}) = x;
-    end
-end
-
-function keep = completeRows(T, vars)
-% Marks the rows that have a valid value in every one of the given variables.
-% Rows are not removed here, so the hourly table stays intact for lag features.
+function S = outlierSummary(T, vars, k)
+% Counts the outliers of each variable with the IQR rule (Tukey fences).
 % Input:  T    - data table (missing values as NaN)
-%         vars - cell array of variables that must be present
-% Output: keep - logical column vector, true for complete rows
-    keep = ~any(isnan(T{:, vars}), 2);
+%         vars - string array of variable names
+%         k    - fence multiplier
+% Output: S    - table with number of outliers, % of the non-missing values
+%                (2 decimals), and how many are above / below the fences
+    X = T{:, vars};
+    [lo, hi] = iqrBounds(X, k);
+    n_upper = sum(X > hi)';
+    n_lower = sum(X < lo)';
+    n_valid = sum(~isnan(X))';
+    S = table(n_upper + n_lower, round((n_upper + n_lower) ./ n_valid * 100, 2), n_upper, n_lower, ...
+        'RowNames', cellstr(vars), 'VariableNames', {'Outliers', 'Pct', 'Upper', 'Lower'});
 end
 
-function [S, O] = outlierSummary(T, vars, k)
-% Flags outliers with Tukey's rule: below Q1 - k*IQR or above Q3 + k*IQR.
-% Input:  T    - data table
-%         vars - cell array of variable names
-%         k    - fence multiplier (1.5 is the usual choice)
-% Output: S    - table with fences, number of low/high outliers and %
-%         O    - logical matrix (rows x vars), true where a value is an outlier
-    n = numel(vars);
-    s = zeros(n, 6);
-    O = false(height(T), n);
-    for j = 1:n
-        x = T.(vars{j});
-        q = prctile(x, [25 75]);
-        lo = q(1) - k * (q(2) - q(1));
-        hi = q(2) + k * (q(2) - q(1));
-        O(:, j) = x < lo | x > hi;
-        s(j, :) = [lo, hi, sum(x < lo), sum(x > hi), sum(O(:, j)), ...
-                   100 * sum(O(:, j)) / sum(~isnan(x))];
-    end
-    S = array2table(round(s, 2), 'RowNames', vars, 'VariableNames', ...
-        {'LowerFence', 'UpperFence', 'NLow', 'NHigh', 'N', 'Pct'});
+function [X, nClip] = clipToBounds(X, lo, hi)
+% Clips each column to [lo, hi]; missing values stay missing.
+% Input:  X     - numeric matrix (rows x variables)
+%         lo/hi - row vectors with the bounds of each column
+% Output: X     - clipped matrix
+%         nClip - column vector with the number of clipped values per column
+    nClip = sum(X < lo | X > hi)';
+    % "includenan" keeps missing values missing (by default min/max would replace them)
+    X = min(max(X, lo, "includenan"), hi, "includenan");
 end
 
-function C = outlierCooccurrence(O, names)
-% For each variable, % of its outlier hours in which at least one of the
-% other variables is also an outlier. High values point to real pollution
-% episodes (several pollutants rise together) rather than sensor errors.
-% Input:  O     - logical outlier matrix (rows x vars), from outlierSummary
-%         names - cell array with the names of the columns of O
-% Output: C     - table with N outliers and % shared with another variable
-    n = numel(names);
-    c = zeros(n, 2);
-    for j = 1:n
-        others = any(O(:, setdiff(1:n, j)), 2);
-        c(j, :) = [sum(O(:, j)), 100 * mean(others(O(:, j)))];
-    end
-    C = array2table(c, 'RowNames', names, 'VariableNames', {'N', 'PctWithOther'});
-    C.PctWithOther = round(C.PctWithOther, 1);
+function [hidx, inData] = hourlyIndex(dt)
+% Position of each row on a complete hourly grid from the first to the last
+% timestamp, so that gaps can be measured in hours even after rows were removed.
+% Input:  dt     - sorted datetime vector
+% Output: hidx   - grid position of each row (1 = first hour)
+%         inData - logical vector over the grid, true for hours present in dt
+    hidx = round(hours(dt - dt(1))) + 1;
+    inData = false(hidx(end), 1);
+    inData(hidx) = true;
 end
 
-function [T, newNames] = logTransform(T, vars)
-% Natural logarithm of the given variables, renamed to 'log_<name>'.
-% All values must be positive (an error is raised otherwise).
-% Input:  T        - data table
-%         vars     - cell array of variables to transform
-% Output: T        - table with the transformed (and renamed) variables
-%         newNames - cell array with the new names, in the order of vars
-    newNames = strcat('log_', vars);
-    for k = 1:numel(vars)
-        x = T.(vars{k});
-        if any(x <= 0)
-            error('logTransform: %s has values <= 0', vars{k});
-        end
-        T.(vars{k}) = log(x);
+function G = gapStats(x, hidx, inData, maxGap)
+% Describes the gaps (runs of missing hours) of one variable on the hourly
+% grid. Removed rows count as part of a gap. Only gaps that contain at least
+% one row still in the data ("relevant" gaps) need filling.
+% Input:  x      - values of the variable for the rows in the data
+%         hidx   - grid position of each row (from hourlyIndex)
+%         inData - logical grid, true for hours present in the data
+%         maxGap - longest gap, in hours, that is considered short
+% Output: G      - struct with nGaps (relevant), longest and median length,
+%                  and the number of values to fill in short and long gaps
+    v = NaN(numel(inData), 1);
+    v(hidx) = x;
+    [starts, ends] = nanRuns(isnan(v));
+    run_len = ends - starts + 1;
+    needs_fill = arrayfun(@(s, e) sum(inData(s:e)), starts, ends);
+    rel = needs_fill > 0;
+    short = run_len <= maxGap;
+    G.nGaps   = sum(rel);
+    G.longest = max(run_len(rel));
+    G.median  = median(run_len(rel));
+    G.inShort = sum(needs_fill(rel & short));
+    G.inLong  = sum(needs_fill(rel & ~short));
+end
+
+function x = interpolateShortGaps(x, hidx, maxGap)
+% Linear interpolation over time, only for gaps of at most maxGap hours on the
+% hourly grid (removed rows count as part of a gap). Longer gaps and gaps at
+% the ends of the series are left missing.
+% Input:  x      - values of the variable for the rows in the data
+%         hidx   - grid position of each row (from hourlyIndex)
+%         maxGap - longest gap, in hours, that is filled
+% Output: x      - values with the short gaps filled
+    v = NaN(hidx(end), 1);
+    v(hidx) = x;
+    na = isnan(v);
+    [starts, ends] = nanRuns(na);
+    run_len = zeros(hidx(end), 1);
+    for i = 1:numel(starts)
+        run_len(starts(i):ends(i)) = ends(i) - starts(i) + 1;
     end
-    T = renamevars(T, vars, newNames);
+    v_interp = fillmissing(v, "linear", "EndValues", "none");   % only gaps with values on both sides
+    fill_mask = na & run_len <= maxGap;
+    v(fill_mask) = v_interp(fill_mask);
+    x = v(hidx);
+end
+
+function X = knnImpute(X, k)
+% Fills the missing values with the mean of the k nearest rows (KNN), on
+% standardised columns so that no variable dominates the distance. Only the
+% missing values are replaced. The target must not be among the columns.
+% Input:  X - numeric matrix (rows x variables) with NaN
+%         k - number of neighbours
+% Output: X - matrix without missing values
+    mu = mean(X, "omitnan");
+    sd = std(X, 1, "omitnan");
+    Xs = knnFill((X - mu) ./ sd, k);
+    X_knn = Xs .* sd + mu;
+    X(isnan(X)) = X_knn(isnan(X));          % only missing values are replaced
 end
 
 function P = zscoreFit(T, vars)
-% Computes the z-score parameters (mean and standard deviation) of each variable.
-% Kept separate from zscoreApply so that, in a future model, the parameters
-% can be computed on the training set only and reused on new data.
-% Input:  T    - data table
-%         vars - cell array of variable names
+% Mean and population standard deviation of each variable (as sklearn's
+% StandardScaler). Kept separate from zscoreApply so that, in a future model,
+% the parameters can be computed on the training set only.
+% Input:  T    - data table (no missing values)
+%         vars - string array of variable names
 % Output: P    - table with Mean and Std, one row per variable
     X = T{:, vars};
-    P = table(mean(X, 'omitnan')', std(X, 'omitnan')', ...
-        'RowNames', vars, 'VariableNames', {'Mean', 'Std'});
+    P = table(mean(X)', std(X, 1)', 'RowNames', cellstr(vars), ...
+        'VariableNames', {'Mean', 'Std'});
 end
 
 function T = zscoreApply(T, P)
@@ -330,259 +271,375 @@ function T = zscoreApply(T, P)
 %         P - table from zscoreFit
 % Output: T - table with the standardised variables
     vars = P.Properties.RowNames;
-    for k = 1:numel(vars)
-        T.(vars{k}) = (T.(vars{k}) - P.Mean(k)) / P.Std(k);
+    T{:, vars} = (T{:, vars} - P.Mean') ./ P.Std';
+end
+
+function C = compareStats(Xb, Xa, names)
+% Standard deviation, maximum and skewness of each variable before and after
+% cleaning (NaN ignored in the data before).
+% Input:  Xb    - values before (rows x variables)
+%         Xa    - values after (rows x variables)
+%         names - string array with the variable names
+% Output: C     - table with std, max and skew, before and after
+    cmp = [std(Xb, "omitnan")', std(Xa)', ...
+           max(Xb, [], "omitnan")', max(Xa)', ...
+           skewness(Xb, 0)', skewness(Xa, 0)'];
+    C = array2table(cmp, 'RowNames', cellstr(names), 'VariableNames', ...
+        {'std_before', 'std_after', 'max_before', 'max_after', 'skew_before', 'skew_after'});
+end
+
+function q = quantile7(X, p)
+% Column-wise quantile with linear interpolation, ignoring NaN.
+% Same method as pandas/numpy, so the IQR bounds match the Python version
+% (MATLAB's built-in quantile uses a slightly different method).
+    q = NaN(1, size(X, 2));
+    for j = 1:size(X, 2)
+        x = sort(X(~isnan(X(:, j)), j));
+        n = numel(x);
+        if n == 0, continue; end
+        h = (n - 1) * p + 1;
+        lo = floor(h);
+        hi = min(lo + 1, n);
+        q(j) = x(lo) + (h - lo) * (x(hi) - x(lo));
     end
 end
 
-function [r, s] = nanRuns(x)
-% Lengths and start positions of the runs of consecutive NaN in a vector.
-% Input:  x - numeric vector
-% Output: r - column vector with the length of each run (empty if none)
-%         s - index of the first NaN of each run
-    d = diff([0; isnan(x(:)); 0]);
-    s = find(d == 1);
-    r = find(d == -1) - s;
+function [starts, ends] = nanRuns(na)
+% Start and end positions of each run of consecutive true values.
+    d = diff([false; na(:); false]);
+    starts = find(d == 1);
+    ends = find(d == -1) - 1;
+end
+
+function Xs = knnFill(Xs, k)
+% K-nearest-neighbours imputation with NaN-aware Euclidean distance, the same
+% approach as sklearn's KNNImputer: for each missing value, the k most
+% similar rows that have that column observed are found (using only the
+% columns observed in both rows), and the mean of their values is used.
+    X = Xs;                                  % distances always use the original values
+    n_feat = size(X, 2);
+    [rows, cols_miss] = find(isnan(X));
+    for m = 1:numel(rows)
+        r = rows(m);
+        c = cols_miss(m);
+        donors = find(~isnan(X(:, c)));
+        D = X(donors, :) - X(r, :);
+        present = ~isnan(D);
+        D(~present) = 0;
+        n_present = sum(present, 2);
+        d = sqrt(n_feat ./ max(n_present, 1) .* sum(D .^ 2, 2));
+        d(n_present == 0) = Inf;
+        [~, nearest] = mink(d, k);
+        Xs(r, c) = mean(X(donors(nearest), c));
+    end
 end
 
 %% ===================== EDA plots =====================
 
-function fig = plotTargetDistribution(y, name)
-% Histogram (with mean and median) and boxplot of the target.
-% Input:  y    - target vector (NaN ignored)
-%         name - label of the target
-% Output: fig  - figure handle
+function fig = plotTargetDistribution(y, name, xLabel)
+% Histogram with a density curve, mean and median, and a boxplot below
+% sharing the same x axis.
+% Input:  y      - target vector (NaN ignored)
+%         name   - name of the target (for the title)
+%         xLabel - label of the x axis
+% Output: fig    - figure handle
+    C = palette();
     y = y(~isnan(y));
-    fig = newFigure([100 100 800 500]);
+    mu = mean(y);
+    med = median(y);
 
-    % bin edges at x.x5 so that the 0.1-resolution values never sit on an edge
-    edges = 0.05:0.2:max(y) + 0.2;
-    subplot(4, 1, 1:3);
-    histogram(y, edges, 'FaceColor', [0.18 0.44 0.62], 'EdgeColor', 'w');
-    hold on;
-    xline(mean(y),   '--r', sprintf('Mean = %.2f', mean(y)), 'LineWidth', 1.5);
-    xline(median(y), ':k',  sprintf('Median = %.2f', median(y)), 'LineWidth', 1.5, ...
-        'LabelHorizontalAlignment', 'left');
-    hold off;
-    ylabel('Count');
-    title(['Distribution of ' name]);
-    xl = xlim;
+    fig = newFigure([100 100 900 560]);
+    tl = tiledlayout(fig, 5, 1, "TileSpacing", "none", "Padding", "compact");
 
-    subplot(4, 1, 4);
-    boxplot(y, 'Orientation', 'horizontal', 'Symbol', '.');
-    xlim(xl);
-    set(gca, 'YTick', []);
-    xlabel([name ' (mg/m^3)']);
+    axH = nexttile(tl, [4 1]); hold(axH, "on");
+    binw = 0.2;   % bin edges at x.x5 so each bin holds exactly two 0.1-step values
+    histogram(axH, y, 0.05:binw:(max(y) + binw), ...
+        "FaceColor", C.blue, "EdgeColor", "w", "FaceAlpha", 0.8);
+    xi = linspace(min(y), max(y), 400);
+    plot(axH, xi, ksdensity(y, xi) * numel(y) * binw, "Color", C.navy, "LineWidth", 2);
+    hm = xline(axH, mu, "LineStyle", "--", "Color", C.red, "LineWidth", 1.5, ...
+        "DisplayName", sprintf("Mean = %.2f", mu));
+    hd = xline(axH, med, "LineStyle", ":", "Color", C.orange, "LineWidth", 2, ...
+        "DisplayName", sprintf("Median = %.2f", med));
+    legend(axH, [hm hd], "Box", "off");
+    ylabel(axH, "Count");
+    title(axH, "Distribution of " + name, "FontWeight", "bold");
+    axH.XTickLabel = {};
+
+    axB = nexttile(tl); hold(axB, "on");
+    boxchart(axB, y, "Orientation", "horizontal", "BoxFaceColor", C.blue, ...
+        "BoxFaceAlpha", 0.35, "BoxWidth", 0.5, "WhiskerLineColor", C.grey, ...
+        "MarkerStyle", ".", "MarkerColor", C.blue);
+    axB.YTick = [];
+    axB.YColor = "none";
+    axB.YGrid = "off";
+    xlabel(axB, xLabel);
+    linkaxes([axH axB], "x");
 end
 
 function fig = plotHistograms(T, vars)
-% Grid of histograms, one per variable.
-% Input:  T    - data table
-%         vars - cell array of variable names
+% Grid of histograms (40 bins) with a density curve, one per variable.
+% Input:  T    - data table (NaN ignored)
+%         vars - string array of variable names (at most 12)
 % Output: fig  - figure handle
-    n = numel(vars);
-    nc = 4;
-    nr = ceil(n / nc);
-    fig = newFigure([50 50 1400 260 * nr]);
-    for k = 1:n
-        subplot(nr, nc, k);
-        x = T.(vars{k});
-        histogram(x(~isnan(x)), 40, 'FaceColor', [0.18 0.44 0.62], 'EdgeColor', 'w');
-        title(vars{k}, 'Interpreter', 'none');
+    C = palette();
+    fig = newFigure([50 50 1600 900]);
+    tl = tiledlayout(fig, 3, 4, "TileSpacing", "compact", "Padding", "compact");
+    for c = vars
+        ax = nexttile(tl); hold(ax, "on");
+        x = T.(c);
+        x = x(~isnan(x));
+        hh = histogram(ax, x, 40, "FaceColor", C.blue, "EdgeColor", "w", "FaceAlpha", 0.75);
+        xi = linspace(min(x), max(x), 300);
+        plot(ax, xi, ksdensity(x, xi) * numel(x) * hh.BinWidth, "Color", C.blue, "LineWidth", 1.5);
+        title(ax, c, "FontWeight", "bold");
     end
 end
 
-function fig = plotTargetCorrelation(C, target)
-% Horizontal bar chart of Pearson and Spearman correlation with the target.
-% Input:  C      - table from targetCorrelation
-%         target - name of the target (for the title)
+function fig = plotSkewGroups(T, groups)
+% One panel per group of variables with the density curve of each variable,
+% standardised (z-score) for display only, so that only the shapes are
+% compared. The skewness of each variable is shown in the legend.
+% Input:  T      - data table (NaN ignored)
+%         groups - n x 2 cell array: {panel title, string array of variables}
+% Output: fig    - figure handle
+    C = palette();
+    colors = [C.blue; C.orange; C.green; C.red];
+    styles = ["-", "--", "-.", ":"];
+    n = size(groups, 1);
+
+    fig = newFigure([50 50 1600 480]);
+    tl = tiledlayout(fig, 1, n, "TileSpacing", "compact", "Padding", "compact");
+    kde_axes = gobjects(1, n);
+    for g = 1:n
+        ax = nexttile(tl); hold(ax, "on");
+        kde_axes(g) = ax;
+        feats = groups{g, 2};
+        for i = 1:numel(feats)
+            x = T.(feats(i));
+            x = x(~isnan(x));
+            z = (x - mean(x)) / std(x);
+            xi = linspace(min(z), max(z), 400);
+            f = ksdensity(z, xi);
+            fill(ax, [xi fliplr(xi)], [f zeros(size(f))], colors(i, :), ...
+                "FaceAlpha", 0.08, "EdgeColor", "none", "HandleVisibility", "off");
+            plot(ax, xi, f, "LineStyle", styles(i), "Color", colors(i, :), "LineWidth", 2.2, ...
+                "DisplayName", sprintf("%s (skew = %.2f)", feats(i), skewness(x, 0)));
+        end
+        xline(ax, 0, "LineStyle", "--", "Color", [0.5 0.5 0.5], "HandleVisibility", "off");
+        xlim(ax, [-3 6]);
+        title(ax, groups{g, 1}, "FontWeight", "bold");
+        xlabel(ax, "Standardised value (z-score)");
+        legend(ax, "Box", "off", "Location", "northeast", "FontSize", 10);
+    end
+    ylabel(kde_axes(1), "Density");
+    linkaxes(kde_axes, "y");
+end
+
+function fig = plotTargetCorrelation(rho, names, target)
+% Horizontal bars of the correlation of each feature with the target,
+% sorted by absolute value (strongest on top).
+% Input:  rho    - vector of correlations (from targetCorrelation)
+%         names  - string array with the feature names
+%         target - name of the target (for the axis label)
+% Output: fig    - figure handle
+    C = palette();
+    [~, idx] = sort(abs(rho), "descend");
+
+    fig = newFigure([100 100 800 600]);
+    ax = axes(fig); hold(ax, "on");
+    barh(ax, rho(idx), 0.7, "FaceColor", C.blue, "EdgeColor", "none");
+    xline(ax, 0, "Color", "k", "LineWidth", 0.8);
+    ax.YTick = 1:numel(idx);
+    ax.YTickLabel = cellstr(names(idx));
+    ax.YDir = "reverse";
+    ax.YGrid = "off";
+    xlabel(ax, "Spearman correlation with " + target);
+    title(ax, "Feature correlation with the target", "FontWeight", "bold");
+end
+
+function fig = plotScalingBeforeAfter(Xb, Xa, names)
+% Boxplots of every feature before (original units) and after standardisation,
+% side by side, with the +/-1 band marked on the standardised panel.
+% Input:  Xb    - values before scaling (rows x variables)
+%         Xa    - values after scaling (rows x variables)
+%         names - string array with the variable names
+% Output: fig   - figure handle
+    C = palette();
+    fig = newFigure([50 50 1500 650]);
+    tl = tiledlayout(fig, 1, 2, "TileSpacing", "compact", "Padding", "compact");
+    panels = {Xb, "Before scaling",        "Original value";
+              Xa, "After standardisation", "Standardised value (z-score)"};
+    box_axes = gobjects(1, 2);
+    for p = 1:2
+        ax = nexttile(tl); hold(ax, "on");
+        box_axes(p) = ax;
+        boxchart(ax, panels{p, 1}, "Orientation", "horizontal", "BoxFaceColor", C.blue, ...
+            "BoxFaceAlpha", 0.35, "BoxWidth", 0.65, "LineWidth", 1.1, ...
+            "WhiskerLineColor", C.grey, "MarkerStyle", ".", "MarkerColor", C.blue);
+        ax.YTick = 1:numel(names);
+        ax.YDir = "reverse";
+        ax.YGrid = "off";
+        if p == 1
+            ax.YTickLabel = cellstr(names);
+        else
+            ax.YTickLabel = {};
+        end
+        title(ax, panels{p, 2}, "FontWeight", "bold");
+        xlabel(ax, panels{p, 3});
+    end
+    linkaxes(box_axes, "y");
+
+    ax = box_axes(2);
+    yl = ylim(ax);
+    band = patch(ax, [-1 1 1 -1], [yl(1) yl(1) yl(2) yl(2)], [0.5 0.5 0.5], ...
+        "FaceAlpha", 0.08, "EdgeColor", "none");
+    uistack(band, "bottom");
+    xline(ax, 0, "LineStyle", "--", "Color", [0.33 0.33 0.33]);
+
+    title(tl, "Effect of standardisation on the feature distributions", ...
+        "FontWeight", "bold", "FontSize", 17);
+end
+
+function fig = plotFeaturesVsTarget(T, feats, target)
+% Scatter of each feature against the target, with the mean of the target
+% within 20 equal-sized (quantile) bins of the feature, which shows the shape
+% of the relationship without assuming a straight line.
+% Input:  T      - data table (original units)
+%         feats  - string array with the features, in plotting order (at most 11)
+%         target - name of the target
+% Output: fig    - figure handle
+    C = palette();
+    y = T.(target);
+
+    fig = newFigure([50 50 1600 950]);
+    tl = tiledlayout(fig, 3, 4, "TileSpacing", "compact", "Padding", "compact");
+    for i = 1:numel(feats)
+        ax = nexttile(tl); hold(ax, "on");
+        x = T.(feats(i));
+        s = scatter(ax, x, y, 4, C.blue, "filled", "MarkerFaceAlpha", 0.15, "MarkerEdgeColor", "none");
+
+        edges = unique(quantile(x, 0:0.05:1));      % unique: clipped values create repeated edges
+        bin = discretize(x, edges);
+        nb = numel(edges) - 1;
+        xm = accumarray(bin, x, [nb 1], @mean, NaN);
+        ym = accumarray(bin, y, [nb 1], @mean, NaN);
+        ok = ~isnan(xm);
+        t = plot(ax, xm(ok), ym(ok), "-o", "Color", C.red, "LineWidth", 2.2, ...
+            "MarkerSize", 3, "MarkerFaceColor", C.red);
+
+        title(ax, feats(i), "FontWeight", "bold", "FontSize", 12);
+        if mod(i - 1, 4) == 0
+            ylabel(ax, target + " (mg/m³)");
+        end
+        if i == 1
+            ax1 = ax; hs = s; ht = t;
+        end
+    end
+    lg = legend(ax1, [hs ht], ["Hourly observations", "Mean " + target + " per bin of the feature"], ...
+        "Box", "off", "FontSize", 12);
+    lg.Layout.Tile = 12;                % the empty 12th tile
+    title(tl, "Features against the target", "FontWeight", "bold", "FontSize", 17);
+end
+
+function fig = plotScatterByTime(T, xVar, target)
+% Scatter of one feature against the target, coloured by the number of days
+% since the first measurement, to show whether the relationship changes over time.
+% Input:  T      - data table with a Datetime column (original units)
+%         xVar   - name of the feature
+%         target - name of the target
 % Output: fig    - figure handle
     fig = newFigure([100 100 800 550]);
-    barh([C.Pearson, C.Spearman]);
-    set(gca, 'YDir', 'reverse', 'YTick', 1:height(C), ...
-        'YTickLabel', C.Properties.RowNames, 'TickLabelInterpreter', 'none');
-    xline(0, 'k');
-    xlim([-1 1]);
-    legend({'Pearson', 'Spearman'}, 'Location', 'southeast');
-    xlabel(['Correlation with ' target]);
-    title(['Feature correlation with ' target], 'Interpreter', 'none');
-    grid on;
+    ax = axes(fig);
+    scatter(ax, T.(xVar), T.(target), 4, days(T.Datetime - T.Datetime(1)), ...
+        "filled", "MarkerFaceAlpha", 0.3);
+    cb = colorbar(ax);
+    cb.Label.String = "Days since the first measurement";
+    xlabel(ax, xVar);
+    ylabel(ax, target + " (mg/m³)");
+    title(ax, xVar + " against " + target + ", coloured by date", "FontWeight", "bold");
 end
 
-function fig = plotMissingMap(T)
-% Map of missing values over time: one row per variable, dark = missing.
-% Input:  T   - data table with a DateTime column (missing values as NaN)
-% Output: fig - figure handle
-    vars = T.Properties.VariableNames(varfun(@isnumeric, T, 'OutputFormat', 'uniform'));
-    M = isnan(T{:, vars})';
-    fig = newFigure([100 100 1100 450]);
-    imagesc(M);
-    colormap([1 1 1; 0.75 0.15 0.15]);
-    clim([0 1]);
-
-    % one tick at the start of each month
-    ticks = find(T.DateTime == dateshift(T.DateTime, 'start', 'month'));
-    set(gca, 'XTick', ticks, 'XTickLabel', cellstr(T.DateTime(ticks), 'MMM yy'), ...
-        'YTick', 1:numel(vars), 'YTickLabel', vars, 'TickLabelInterpreter', 'none');
-    xlabel('Time');
-    title('Missing values over time (red = missing)');
-end
-
-function fig = plotInterpolation(t, Xb, Xa, F, names)
-% Before/after view of the interpolation: measured values as a line,
-% interpolated values as red markers, long gaps left as breaks.
-% Input:  t     - datetime vector of the window to show
-%         Xb    - values before interpolation (rows x variables)
-%         Xa    - values after interpolation (rows x variables)
-%         F     - logical matrix, true where a value was interpolated
-%         names - cell array with the variable names
-% Output: fig   - figure handle
-    n = numel(names);
-    fig = newFigure([100 100 1100 280 * n]);
-    for k = 1:n
-        subplot(n, 1, k);
-        plot(t, Xa(:, k), ':', 'Color', [0.85 0.15 0.15], 'LineWidth', 1);
-        hold on;
-        plot(t, Xb(:, k), '-', 'Color', [0.18 0.44 0.62], 'LineWidth', 1.2);
-        plot(t(F(:, k)), Xa(F(:, k), k), 'o', 'MarkerSize', 6, ...
-            'MarkerFaceColor', [0.85 0.15 0.15], 'MarkerEdgeColor', 'none');
-        hold off;
-        ylabel(names{k}, 'Interpreter', 'none');
-        grid on;
-        if k == 1
-            legend({'After interpolation', 'Measured', 'Interpolated value'}, ...
-                'Location', 'northoutside', 'Orientation', 'horizontal');
-            title('Short-gap interpolation (long gaps are left missing)');
-        end
-    end
-end
-
-function fig = plotHourlyCoverage(Vb, Va, names)
-% Grouped bars of the number of valid values per hour of the day,
-% before and after interpolation (whole period).
-% Input:  Vb    - table from validByHour before interpolation
-%         Va    - table from validByHour after interpolation
-%         names - cell array with the variables to show
-% Output: fig   - figure handle
-    n = numel(names);
-    fig = newFigure([100 100 1100 280 * n]);
-    for k = 1:n
-        subplot(n, 1, k);
-        b = bar(Vb.Hour, [Vb.(names{k}), Va.(names{k})], 'grouped', 'EdgeColor', 'none');
-        b(1).FaceColor = [0.18 0.44 0.62];
-        b(2).FaceColor = [0.85 0.15 0.15];
-        xlim([-0.5 23.5]);
-        set(gca, 'XTick', 0:23);
-        ylabel(['Valid hours, ' names{k}], 'Interpreter', 'none');
-        grid on;
-        if k == 1
-            legend({'Before interpolation', 'After interpolation'}, ...
-                'Location', 'northoutside', 'Orientation', 'horizontal');
-            title('Valid values per hour of the day (whole period)');
-        end
-        if k == n, xlabel('Hour of the day'); end
-    end
-end
-
-function fig = plotBoxplots(T, vars)
-% Boxplots of several variables side by side. Each variable is standardised
-% (z-score) for display only, so that variables with different units fit on
-% the same axis; the data themselves are not changed.
-% Input:  T    - data table
-%         vars - cell array of variable names
-% Output: fig  - figure handle
-    X = T{:, vars};
-    Z = (X - mean(X, 'omitnan')) ./ std(X, 'omitnan');
-    fig = newFigure([100 100 1100 450]);
-    boxplot(Z, 'Labels', vars, 'Symbol', '.', 'OutlierSize', 4);
-    set(gca, 'TickLabelInterpreter', 'none');
-    xtickangle(30);
-    yline(0, ':k');
-    ylabel('Standardised value (z-score)');
-    title('Distribution and outliers (Tukey fences, 1.5 IQR)');
-    grid on;
-end
-
-function fig = plotTransformHist(Xb, Xa, namesB, namesA)
-% Histograms before (left) and after (right) a transformation, one row per
-% variable, with the skewness in each title.
-% Input:  Xb     - values before (rows x variables)
-%         Xa     - values after (rows x variables)
-%         namesB - cell array with the names before
-%         namesA - cell array with the names after
+function fig = plotTargetOverTime(T, target)
+% Target over the whole period: hourly values on a complete hourly grid (so
+% removed rows show as gaps instead of being joined by a line) and daily mean.
+% Input:  T      - data table with a Datetime column
+%         target - name of the target
 % Output: fig    - figure handle
-    n = numel(namesB);
-    fig = newFigure([100 100 1000 250 * n]);
-    for k = 1:n
-        subplot(n, 2, 2 * k - 1);
-        histogram(Xb(:, k), 50, 'FaceColor', [0.18 0.44 0.62], 'EdgeColor', 'w');
-        title(sprintf('%s  (skewness = %.2f)', namesB{k}, skewness(Xb(:, k))), ...
-            'Interpreter', 'none');
-        subplot(n, 2, 2 * k);
-        histogram(Xa(:, k), 50, 'FaceColor', [0.85 0.15 0.15], 'EdgeColor', 'w');
-        title(sprintf('%s  (skewness = %.2f)', namesA{k}, skewness(Xa(:, k))), ...
-            'Interpreter', 'none');
+    C = palette();
+    tt = table2timetable(T(:, ["Datetime", target]));
+    hourly = retime(tt, "hourly", "fillwithmissing");
+    daily = retime(tt, "daily", "mean");
+
+    light_blue = C.blue + (1 - C.blue) * 0.65;
+
+    fig = newFigure([100 100 1400 450]);
+    ax = axes(fig); hold(ax, "on");
+    plot(ax, hourly.Datetime, hourly.(target), "Color", light_blue, "LineWidth", 0.5, ...
+        "DisplayName", "Hourly value");
+    plot(ax, daily.Datetime, daily.(target), "Color", C.navy, "LineWidth", 1.8, ...
+        "DisplayName", "Daily mean");
+    ylabel(ax, target + " (mg/m³)");
+    title(ax, target + " over the measurement period", "FontWeight", "bold");
+    legend(ax, "Box", "off", "Location", "northwest");
+    xlim(ax, [min(hourly.Datetime) max(hourly.Datetime)]);
+end
+
+function pairs = topCorrelatedPairs(T, vars, n)
+% The n pairs of variables with the highest absolute Spearman correlation.
+% Input:  T     - data table
+%         vars  - string array of variable names
+%         n     - number of pairs
+% Output: pairs - n x 2 string array, one pair per row
+    R = corr(T{:, vars}, "Type", "Spearman");
+    R(tril(true(size(R)))) = 0;                 % keep each pair once
+    [~, order] = sort(abs(R(:)), "descend");
+    [ia, ib] = ind2sub(size(R), order(1:n));
+    pairs = [vars(ia)', vars(ib)'];
+end
+
+function fig = plotPairs(T, pairs)
+% Scatter plot of each pair of variables, one below the other, without axis
+% values: a narrow band of points means one variable almost determines the other.
+% Input:  T     - data table
+%         pairs - n x 2 string array (from topCorrelatedPairs)
+% Output: fig   - figure handle
+    C = palette();
+    fig = newFigure([100 50 550 1300]);
+    tl = tiledlayout(fig, size(pairs, 1), 1, "TileSpacing", "compact", "Padding", "compact");
+    for p = 1:size(pairs, 1)
+        ax = nexttile(tl);
+        scatter(ax, T.(pairs(p, 1)), T.(pairs(p, 2)), 4, C.blue, "filled", ...
+            "MarkerFaceAlpha", 0.15, "MarkerEdgeColor", "none");
+        xticks(ax, []);                 % no values on the axes (also removes the grid)
+        yticks(ax, []);
+        ax.FontSize = 16;               % axis titles scale with this
+        xlabel(ax, pairs(p, 1));
+        ylabel(ax, pairs(p, 2));
+        title(ax, pairs(p, 1) + " vs " + pairs(p, 2), "FontWeight", "bold", "FontSize", 16);
     end
 end
 
-function fig = plotFeatureVsTarget(T, vars, target, group, groupNames)
-% Scatter of each input against the target, coloured by group (e.g. time
-% period), with the median of the target in quantile bins of the input.
-% Input:  T          - data table
-%         vars       - cell array of input names
-%         target     - name of the target
-%         group      - logical vector, splits the rows in two groups
-%         groupNames - 1x2 cell array with the legend names {false, true}
-% Output: fig        - figure handle
-    colors = [0.18 0.44 0.62; 0.85 0.15 0.15];
-    n  = numel(vars);
-    nc = 4;
-    nr = ceil(n / nc);
-    fig = newFigure([50 50 1400 300 * nr]);
-    y = T.(target);
-    for k = 1:n
-        subplot(nr, nc, k);
-        x = T.(vars{k});
-        hold on;
-        for g = 0:1
-            idx = group == g;
-            scatter(x(idx), y(idx), 3, colors(g + 1, :), 'filled', ...
-                'MarkerFaceAlpha', 0.15, 'HandleVisibility', 'off');
-        end
-        for g = 0:1
-            idx = group == g;
-            [xc, ym] = binnedMedian(x(idx), y(idx), 15);
-            plot(xc, ym, '-o', 'Color', colors(g + 1, :) * 0.7, 'LineWidth', 2, ...
-                'MarkerSize', 3, 'MarkerFaceColor', colors(g + 1, :) * 0.7);
-        end
-        hold off;
-        grid on;
-        xlabel(vars{k}, 'Interpreter', 'none');
-        if mod(k, nc) == 1, ylabel(target, 'Interpreter', 'none'); end
-        if k == 1, legend(groupNames, 'Location', 'northwest'); end
-    end
-end
-
-function [xc, ym] = binnedMedian(x, y, nBins)
-% Median of y inside quantile bins of x (each bin has ~the same number of points).
-% Input:  x, y  - vectors of the same length
-%         nBins - number of bins
-% Output: xc    - median of x in each bin (bin position)
-%         ym    - median of y in each bin
-    edges = unique(prctile(x, linspace(0, 100, nBins + 1)));
-    b  = discretize(x, edges);
-    ok = ~isnan(b);
-    g  = findgroups(b(ok));          % renumber the non-empty bins 1..k
-    xc = splitapply(@median, x(ok), g);
-    ym = splitapply(@median, y(ok), g);
+function C = palette()
+% Colours used in every figure.
+    C.blue   = [46 111 158] / 255;   % #2E6F9E
+    C.navy   = [27  63  92] / 255;   % #1B3F5C
+    C.red    = [192 57  43] / 255;   % #C0392B
+    C.orange = [230 126 34] / 255;   % #E67E22
+    C.green  = [39 174  96] / 255;   % #27AE60
+    C.grey   = [0.27 0.27 0.27];
 end
 
 function fig = newFigure(pos)
-% Creates a white figure (light theme, also when MATLAB uses a dark theme).
+% Creates a white figure with the plot defaults used in the project (light
+% theme also when MATLAB uses a dark theme).
 % Input:  pos - figure position [left bottom width height]
 % Output: fig - figure handle
-    fig = figure('Color', 'w', 'Position', pos);
-    if exist('theme', 'file')
-        theme(fig, 'light');
+    fig = figure("Position", pos, "Color", "w", ...
+        "defaultAxesFontSize", 14, "defaultAxesTickDir", "out", ...
+        "defaultAxesBox", "off", "defaultAxesXGrid", "on", "defaultAxesYGrid", "on", ...
+        "defaultAxesGridAlpha", 0.15);
+    if exist("theme", "file")
+        theme(fig, "light");
     end
 end
