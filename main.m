@@ -232,12 +232,7 @@ n_bins = 10;
 rel = L.featureRelevance(eda, feature_cols, target_col, n_bins);
 disp(round(rel, 3))
 
-% A histogram estimate of MI is slightly positive even for independent
-% variables. Expected value of that bias (Miller-Madow), in bits:
-mi_bias = (n_bins - 1)^2 / (2 * height(eda) * log(2));
-fprintf("MI expected for independent variables: %.3f bits\n", mi_bias);
-
-fig = L.plotRelevance(rel, target_col, mi_bias);
+fig = L.plotRelevance(rel, target_col);
 exportgraphics(fig, fullfile(fig_dir, "feature_relevance.pdf"), "ContentType", "vector");
 
 %% 22. Feature selection: redundancy between features (correlation clusters)

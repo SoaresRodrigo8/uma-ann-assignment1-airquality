@@ -673,13 +673,11 @@ function R = featureRelevance(T, feats, target, nBins)
     R = R(order, :);
 end
 
-function fig = plotRelevance(R, target, miBias)
+function fig = plotRelevance(R, target)
 % Relevance of each feature in two panels sharing the feature axis: Pearson
-% and Spearman correlation with the target (left) and mutual information
-% (right), with the expected MI of two independent variables marked.
+% and Spearman correlation with the target (left) and mutual information (right).
 % Input:  R      - table from featureRelevance
 %         target - name of the target
-%         miBias - expected MI (bits) of independent variables, drawn as a line
 % Output: fig    - figure handle
     C = palette();
     names = R.Properties.RowNames;
@@ -704,8 +702,6 @@ function fig = plotRelevance(R, target, miBias)
 
     ax2 = nexttile(tl); hold(ax2, "on");
     barh(ax2, R.MI, 0.6, "FaceColor", C.green, "EdgeColor", "none");
-    xline(ax2, miBias, "--", "Estimation bias", "Color", C.grey, "LineWidth", 1.2, ...
-        "LabelVerticalAlignment", "bottom", "FontSize", 11);
     ax2.YTick = 1:n;
     ax2.YTickLabel = {};
     ax2.YDir = "reverse";
