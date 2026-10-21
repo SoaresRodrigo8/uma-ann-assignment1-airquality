@@ -42,8 +42,12 @@ function L = aqlib()
     L.plotCorrClusters    = @plotCorrClusters;
     L.pcaAnalysis         = @pcaAnalysis;
     L.plotPCA             = @plotPCA;
-    L.mrmrRank            = @mrmrRank;
-    L.plotMRMR            = @plotMRMR;
+    L.reliefWeights       = @reliefWeights;
+    L.plotRelief          = @plotRelief;
+    L.periodCorrelation   = @periodCorrelation;
+    L.sameSeasonShift     = @sameSeasonShift;
+    L.plotStability       = @plotStability;
+    L.selectFeatures      = @selectFeatures;
 end
 
 %% ===================== Import and exploration =====================
@@ -884,78 +888,169 @@ function fig = plotPCA(P, names, threshold)
     title(tl, "Principal component analysis of the features", "FontWeight", "bold", "FontSize", 17);
 end
 
-function M = mrmrRank(T, feats, target, nBins)
-% Minimum Redundancy Maximum Relevance ranking (greedy). Relevance is the
-% mutual information (MI) with the target; redundancy is the mean MI with
-% the features already selected. The first feature is the most relevant
-% one; then, at each step, the feature with the highest
-% score = relevance - redundancy is added.
+function W = reliefWeights(T, feats, target, k, seed)
+% RReliefF weights (the regression version of Relief): for each hour, its k
+% nearest hours in the space of ALL the features are found, and a feature
+% gains weight when its differences between neighbours go together with
+% differences in the target. Because it compares neighbours in all the
+% features at once, it can detect features that only help in combination
+% with others. A column of random noise is added as a reference: a useful
+% feature must get a clearly higher weight than noise.
 % Input:  T      - data table without missing values
 %         feats  - string array of feature names
 %         target - name of the target
-%         nBins  - number of equal-frequency bins for the MI
-% Output: M      - table in selection order: Relevance, Redundancy and
-%                  Score of each feature at the step it was selected
-    X = T{:, feats};
-    y = T.(target);
-    n = numel(feats);
-
-    rel = zeros(n, 1);                       % MI of each feature with the target
-    MIxx = zeros(n);                         % MI between every pair of features
-    for i = 1:n
-        rel(i) = mutualInfo(X(:, i), y, nBins);
-        for j = i + 1:n
-            MIxx(i, j) = mutualInfo(X(:, i), X(:, j), nBins);
-            MIxx(j, i) = MIxx(i, j);
-        end
-    end
-
-    selected = zeros(n, 1);
-    red = zeros(n, 1);
-    score = zeros(n, 1);
-    left = 1:n;
-    for step = 1:n
-        if step == 1
-            r = zeros(1, numel(left));
-        else
-            r = mean(MIxx(selected(1:step - 1), left), 1);   % redundancy with the selected
-        end
-        s = rel(left)' - r;
-        [score(step), k] = max(s);
-        selected(step) = left(k);
-        red(step) = r(k);
-        left(k) = [];
-    end
-
-    M = table(rel(selected), red, score, 'RowNames', cellstr(feats(selected)), ...
-        'VariableNames', {'Relevance', 'Redundancy', 'Score'});
+%         k      - number of nearest neighbours
+%         seed   - seed of the random noise column (reproducible results)
+% Output: W      - table with the Weight of each feature and of the noise
+%                  column ("Random noise"), sorted from highest to lowest
+    s = RandStream("mt19937ar", "Seed", seed);     % local generator, global rng untouched
+    noise = randn(s, height(T), 1);
+    [~, w] = relieff([T{:, feats}, noise], T.(target), k);
+    W = table(w', 'RowNames', [cellstr(feats), {'Random noise'}], 'VariableNames', {'Weight'});
+    W = sortrows(W, "Weight", "descend");
 end
 
-function fig = plotMRMR(M)
-% mRMR ranking: relevance and redundancy of each feature at the step it was
-% selected (bars) and the resulting score (line), in selection order.
-% Input:  M   - table from mrmrRank
+function fig = plotRelief(W, k)
+% Horizontal bars of the RReliefF weights, with the random-noise reference
+% in grey and marked by a dashed line.
+% Input:  W   - table from reliefWeights
+%         k   - number of neighbours used (for the title)
 % Output: fig - figure handle
     C = palette();
-    n = height(M);
+    names = W.Properties.RowNames;
+    n = height(W);
+    is_noise = strcmp(names, 'Random noise');
 
-    fig = newFigure([100 100 1300 560]);
+    fig = newFigure([100 100 900 600]);
     ax = axes(fig); hold(ax, "on");
-    b = bar(ax, 1:n, [M.Relevance, M.Redundancy], "grouped", "EdgeColor", "none");
-    b(1).FaceColor = C.green;
-    b(2).FaceColor = [0.7 0.7 0.7];
-    plot(ax, 1:n, M.Score, "-o", "Color", C.red, "LineWidth", 2, ...
-        "MarkerFaceColor", C.red, "MarkerSize", 6);
-    yline(ax, 0, "Color", "k", "LineWidth", 0.8, "HandleVisibility", "off");
-    ax.XTick = 1:n;
-    ax.XTickLabel = strcat(string(1:n)', ". ", string(M.Properties.RowNames));
-    ax.XTickLabelRotation = 35;
-    ax.XGrid = "off";
-    xlim(ax, [0.4 n + 0.6]);
-    ylabel(ax, "Mutual information (bits)");
-    legend(ax, ["Relevance (MI with the target)", "Redundancy (mean MI with the selected)", ...
-        "Score = relevance - redundancy"], "Box", "off", "Location", "northeast");
-    title(ax, "mRMR ranking (selection order)", "FontWeight", "bold");
+    b = barh(ax, W.Weight, 0.65, "FaceColor", "flat", "EdgeColor", "none");
+    b.CData = repmat(C.blue, n, 1);
+    b.CData(is_noise, :) = [0.65 0.65 0.65];
+    xline(ax, W.Weight(is_noise), "--", "Noise level", "Color", C.grey, "LineWidth", 1.2, ...
+        "LabelVerticalAlignment", "bottom", "FontSize", 11);
+    xline(ax, 0, "Color", "k", "LineWidth", 0.8);
+    xlim(ax, [1.8 * min(0, min(W.Weight)), 1.08 * max(W.Weight)]);   % room for the noise label
+    ax.YTick = 1:n;
+    ax.YTickLabel = names;
+    ax.YDir = "reverse";
+    ax.YGrid = "off";
+    xlabel(ax, "RReliefF weight");
+    title(ax, sprintf("RReliefF weights (k = %d neighbours)", k), "FontWeight", "bold");
+end
+
+function P = periodCorrelation(T, feats, target, splitDate)
+% Spearman correlation of each feature with the target before and after a
+% date, to see which relationships change over time.
+% Input:  T         - data table with a Datetime column
+%         feats     - string array of feature names
+%         target    - name of the target
+%         splitDate - first datetime of the second period
+% Output: P         - table with Before, After and Change (After - Before)
+    late = T.Datetime >= splitDate;
+    X = T{:, feats};
+    y = T.(target);
+    before = corr(X(~late, :), y(~late), "Type", "Spearman");
+    after  = corr(X(late, :),  y(late),  "Type", "Spearman");
+    P = table(before, after, after - before, 'RowNames', cellstr(feats), ...
+        'VariableNames', {'Before', 'After', 'Change'});
+end
+
+function S = sameSeasonShift(T, feats, target, months, years, targetRange)
+% Median of each feature in the same months of two different years, using
+% only the hours with the target inside the same range. Same season and same
+% pollution level: a feature that still changes has changed its relationship
+% with the target (drift of the sensor, recalibration or a real change).
+% Input:  T           - data table with a Datetime column
+%         feats       - string array of feature names
+%         target      - name of the target
+%         months      - months to compare (e.g. [3 4] for March-April)
+%         years       - the two years, [first second]
+%         targetRange - [min max] of the target in the hours used
+% Output: S           - table with the median in each year and the % change;
+%                       S.Properties.UserData has the number of hours used
+    y = T.(target);
+    mid = y >= targetRange(1) & y <= targetRange(2) & ismember(T.Datetime.Month, months);
+    in1 = mid & T.Datetime.Year == years(1);
+    in2 = mid & T.Datetime.Year == years(2);
+    m1 = median(T{in1, feats})';
+    m2 = median(T{in2, feats})';
+    S = table(m1, m2, 100 * (m2 - m1) ./ m1, 'RowNames', cellstr(feats), ...
+        'VariableNames', {sprintf('Median%d', years(1)), sprintf('Median%d', years(2)), 'PctChange'});
+    S.Properties.UserData = [sum(in1), sum(in2)];
+end
+
+function fig = plotStability(S, maxShift)
+% Horizontal bars of the % change of each feature between the two years of
+% sameSeasonShift, with the band of changes considered stable shaded.
+% Input:  S        - table from sameSeasonShift
+%         maxShift - largest |% change| considered stable
+% Output: fig      - figure handle
+    C = palette();
+    [~, order] = sort(abs(S.PctChange), "descend");
+    S = S(order, :);
+    names = S.Properties.RowNames;
+    n = height(S);
+    unstable = abs(S.PctChange) > maxShift;
+
+    fig = newFigure([100 100 950 600]);
+    ax = axes(fig); hold(ax, "on");
+    patch(ax, [-maxShift maxShift maxShift -maxShift], [0.4 0.4 n + 0.6 n + 0.6], C.green, ...
+        "FaceAlpha", 0.12, "EdgeColor", "none");
+    b = barh(ax, S.PctChange, 0.65, "FaceColor", "flat", "EdgeColor", "none");
+    b.CData = repmat(C.blue, n, 1);
+    b.CData(unstable, :) = repmat(C.red, sum(unstable), 1);
+    xline(ax, 0, "Color", "k", "LineWidth", 0.8);
+    for j = 1:n
+        v = round(S.PctChange(j));
+        if v == 0, lbl = "0%"; else, lbl = sprintf("%+d%%", v); end   % no "-0%"
+        if S.PctChange(j) >= 0, ha = "left"; else, ha = "right"; end
+        text(ax, S.PctChange(j), j, "  " + lbl + "  ", "HorizontalAlignment", ha, "FontSize", 11);
+    end
+    ax.YTick = 1:n;
+    ax.YTickLabel = names;
+    ax.YDir = "reverse";
+    ax.YGrid = "off";
+    xlim(ax, [min(-60, 1.3 * min(S.PctChange)), 1.2 * max(S.PctChange)]);
+    ylim(ax, [0.4 n + 0.6]);
+    xlabel(ax, "Change of the median, same season and same CO level (%)");
+    title(ax, sprintf("Stability of the features over one year (stable band: \\pm%d%%)", maxShift), ...
+        "FontWeight", "bold");
+end
+
+function D = selectFeatures(D, minCorr, maxShift)
+% Applies the selection rules to a table of criteria, in this order:
+%   1. unstable: |% change| in the same-season test above maxShift;
+%   2. no added information: RReliefF weight not above the random-noise
+%      weight for every number of neighbours tested;
+%   3. redundant: |rho| >= minCorr with another feature that is more stable
+%      (smaller |% change|), which is the one kept.
+% A feature is kept only if no rule applies; every rule that applies is
+% listed in Reason.
+% Input:  D        - table, one row per feature, with variables Shift (%),
+%                    AboveNoise (logical), MaxCorr (|rho|) and MostSimilar
+%                    (name of the feature with that |rho|)
+%         minCorr  - |rho| from which two features are redundant
+%         maxShift - largest |% change| considered stable
+% Output: D        - same table with Keep (logical) and Reason (string)
+    names = string(D.Properties.RowNames);
+    n = height(D);
+    reason = strings(n, 1);
+    for j = 1:n
+        r = strings(0);
+        if abs(D.Shift(j)) > maxShift
+            r(end + 1) = sprintf("unstable (%+.0f%%)", D.Shift(j));
+        end
+        if ~D.AboveNoise(j)
+            r(end + 1) = "no information above noise (RReliefF)";
+        end
+        k = find(names == D.MostSimilar(j));
+        if D.MaxCorr(j) >= minCorr && abs(D.Shift(k)) < abs(D.Shift(j))
+            r(end + 1) = sprintf("redundant with %s (|rho| = %.3f, more stable)", names(k), D.MaxCorr(j));
+        end
+        reason(j) = strjoin(r, "; ");
+    end
+    D.Keep = reason == "";
+    D.Reason = reason;
 end
 
 function mi = mutualInfo(x, y, nBins)

@@ -289,14 +289,102 @@ exportgraphics(fig, fullfile(fig_dir, "pca.pdf"), "ContentType", "vector");
 disp(array2table(round(pc.coeff(:, [1:3 n_pc]), 2), 'RowNames', cellstr(feature_cols), ...
     'VariableNames', {'PC1', 'PC2', 'PC3', sprintf('PC%d', n_pc)}))
 
-%% 24. Feature selection: mRMR (minimum redundancy, maximum relevance)
-% Greedy ranking with the same mutual information as section 21 (n_bins
-% equal-frequency bins). First the most relevant feature; then, at each
-% step, the one with the highest relevance minus mean redundancy with the
-% features already chosen. A feature that repeats what is already selected
-% gets a low (even negative) score, however relevant it is on its own.
-mrmr = L.mrmrRank(eda, feature_cols, target_col, n_bins);
-disp(round(mrmr, 3))
+%% 24. Feature selection: RReliefF (relevance in the context of all features)
+% Each hour is compared with its k most similar hours in ALL the features.
+% A feature gains weight when its small differences between similar hours
+% go together with differences in CO. Unlike section 21, which only
+% look at pairs of variables, this can reveal features that only help in
+% combination with others (e.g. temperature correcting the sensors).
+% k = 10 is the usual choice for RReliefF; a column of random noise is added
+% as a reference, since the weights have no absolute scale.
+k_relief = 10;
+relief = L.reliefWeights(eda, feature_cols, target_col, k_relief, 1);
+disp(round(relief, 4))
 
-fig = L.plotMRMR(mrmr);
-exportgraphics(fig, fullfile(fig_dir, "mrmr.pdf"), "ContentType", "vector");
+fig = L.plotRelief(relief, k_relief);
+exportgraphics(fig, fullfile(fig_dir, "relieff.pdf"), "ContentType", "vector");
+
+% Sensitivity to the number of neighbours and to the noise column (seed)
+ks = [5 10 20 50];
+sens = table('Size', [numel(feature_cols) + 1, numel(ks)], 'VariableTypes', repmat("double", 1, numel(ks)), ...
+    'VariableNames', compose("k%d", ks), 'RowNames', relief.Properties.RowNames);
+for i = 1:numel(ks)
+    w = L.reliefWeights(eda, feature_cols, target_col, ks(i), 1);
+    sens{:, i} = w{sens.Properties.RowNames, "Weight"};
+end
+disp(round(sens, 4))
+for seed = 2:5
+    w = L.reliefWeights(eda, feature_cols, target_col, k_relief, seed);
+    fprintf("Seed %d: noise weight %.4f\n", seed, w{"Random noise", "Weight"});
+end
+
+% Relief does not penalise redundancy: two features carrying the same
+% information share the weight. Removing C6H6(GT) shows how much of the
+% weight of PT08.S2(NMHC) it was taking.
+no_c6h6 = L.reliefWeights(eda, feature_cols(feature_cols ~= "C6H6(GT)"), target_col, k_relief, 1);
+fprintf("PT08.S2(NMHC) weight: %.4f with C6H6(GT), %.4f without it\n", ...
+    relief{"PT08.S2(NMHC)", "Weight"}, no_c6h6{"PT08.S2(NMHC)", "Weight"});
+
+%% 25. Feature selection: stability of the relationships over time
+% (a) Spearman correlation with CO before and after September 2004, when the
+%     level of NOx(GT) changes (NOx_bands.pdf, section 18).
+split_date = datetime(2004, 9, 1);
+by_period = L.periodCorrelation(eda, feature_cols, target_col, split_date);
+disp(round(by_period, 3))
+fprintf("Rows: before %d | after %d\n", sum(eda.Datetime < split_date), sum(eda.Datetime >= split_date));
+
+% (b) The two periods are also different seasons, so a change between them
+%     may just be seasonal. Control for season and pollution level: compare
+%     March-April 2004 with March-April 2005, only in the hours with CO
+%     between 1.5 and 2.5 mg/m3 (around the median, 1.8). T, RH and AH should
+%     barely change (same season): they show how well the comparison is
+%     controlled. A feature that still changes has changed its relationship
+%     with CO.
+max_shift = 20;                     % largest |% change| considered stable
+shift = L.sameSeasonShift(eda, feature_cols, target_col, [3 4], [2004 2005], [1.5 2.5]);
+disp(round(shift, 1))
+fprintf("Hours used: %d in 2004, %d in 2005\n", shift.Properties.UserData);
+
+% Which features are unstable for other thresholds
+for t = [10 20 30 50]
+    fprintf("|change| > %d%%: %s\n", t, strjoin(feature_cols(abs(shift.PctChange') > t), ", "));
+end
+
+fig = L.plotStability(shift, max_shift);
+exportgraphics(fig, fullfile(fig_dir, "stability.pdf"), "ContentType", "vector");
+
+%% 26. Feature selection: decision and final subset
+% One row per feature with every criterion. The rules (selectFeatures) were
+% fixed before looking at the result:
+%   1. unstable over time (|change| > max_shift)                 -> remove
+%   2. RReliefF weight not above the noise for every k tested    -> remove
+%   3. |rho| >= min_corr with a more stable feature (redundant)  -> remove
+% Low relevance on its own is NOT a reason to remove a feature: section 24
+% showed that T, RH and AH only help together with the sensors.
+Rabs = abs(cc.R);
+Rabs(1:numel(feature_cols) + 1:end) = 0;            % ignore each feature with itself
+[max_corr, j_sim] = max(Rabs, [], 2);
+above_noise = all(sens{cellstr(feature_cols), :} > sens{'Random noise', :}, 2);
+
+crit = table(rel{cellstr(feature_cols), "Spearman"}, rel{cellstr(feature_cols), "MI"}, ...
+    max_corr, feature_cols(j_sim)', relief{cellstr(feature_cols), "Weight"}, above_noise, ...
+    shift.PctChange, 'RowNames', cellstr(feature_cols), 'VariableNames', ...
+    {'Spearman', 'MI', 'MaxCorr', 'MostSimilar', 'Relief', 'AboveNoise', 'Shift'});
+crit = L.selectFeatures(crit, min_corr, max_shift);
+
+show = crit;                                        % rounded copy for display
+show.Spearman = round(show.Spearman, 3);
+show.MI = round(show.MI, 3);
+show.MaxCorr = round(show.MaxCorr, 3);
+show.Relief = round(1000 * show.Relief, 2);         % x 1e-3
+show.Shift = round(show.Shift, 1);
+disp(show)
+
+selected = feature_cols(crit.Keep);
+fprintf("Selected features (%d of %d): %s\n", numel(selected), numel(feature_cols), strjoin(selected, ", "));
+fprintf("Removed: %s\n", strjoin(feature_cols(~crit.Keep), ", "));
+
+% Save the selected subset (same rows as section 17)
+sel_cols = ["Datetime", target_col, selected];
+writetable(clean_out(:, sel_cols), fullfile(out_dir, "airquality_selected.csv"));
+writetable(scaled_out(:, sel_cols), fullfile(out_dir, "airquality_selected_scaled.csv"));
