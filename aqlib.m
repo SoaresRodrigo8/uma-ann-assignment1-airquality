@@ -34,6 +34,9 @@ function L = aqlib()
     L.plotTargetOverTime     = @plotTargetOverTime;
     L.topCorrelatedPairs     = @topCorrelatedPairs;
     L.plotPairs              = @plotPairs;
+
+    % --- Feature selection ---
+    L.featureRelevance = @featureRelevance;
 end
 
 %% ===================== Import and exploration =====================
@@ -642,4 +645,40 @@ function fig = newFigure(pos)
     if exist("theme", "file")
         theme(fig, "light");
     end
+end
+
+%% ===================== Feature selection =====================
+
+function R = featureRelevance(T, feats, target, nBins)
+% Relevance of each feature for the target, measured three ways:
+% Pearson (linear), Spearman (monotonic) and mutual information (any
+% dependence, also non-monotonic). Sorted by absolute Spearman correlation.
+% Input:  T      - data table without missing values
+%         feats  - string array of feature names
+%         target - name of the target
+%         nBins  - number of equal-frequency bins for the mutual information
+% Output: R      - table with Pearson, Spearman and MI (bits), one row per feature
+    X = T{:, feats};
+    y = T.(target);
+    mi = zeros(numel(feats), 1);
+    for j = 1:numel(feats)
+        mi(j) = mutualInfo(X(:, j), y, nBins);
+    end
+    R = table(corr(X, y, "Type", "Pearson"), corr(X, y, "Type", "Spearman"), mi, ...
+        'RowNames', cellstr(feats), 'VariableNames', {'Pearson', 'Spearman', 'MI'});
+    [~, order] = sort(abs(R.Spearman), "descend");
+    R = R(order, :);
+end
+
+function mi = mutualInfo(x, y, nBins)
+% Mutual information (in bits) between two variables, estimated from a 2-D
+% histogram with nBins equal-frequency bins per variable. Bins are built
+% from the ranks, so tied values always fall in the same bin.
+    n = numel(x);
+    bx = min(nBins, ceil(nBins * tiedrank(x) / n));
+    by = min(nBins, ceil(nBins * tiedrank(y) / n));
+    pxy = accumarray([bx by], 1, [nBins nBins]) / n;   % joint probabilities
+    pind = sum(pxy, 2) * sum(pxy, 1);                  % product of the marginals
+    nz = pxy > 0;
+    mi = sum(pxy(nz) .* log2(pxy(nz) ./ pind(nz)));
 end

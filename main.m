@@ -221,3 +221,12 @@ pairs = L.topCorrelatedPairs(eda, feature_cols, 3);
 fig = L.plotPairs(eda, pairs);
 exportgraphics(fig, fullfile(fig_dir, "redundant_pairs.pdf"), ...
     "ContentType", "image", "Resolution", 300);
+
+%% 21. Feature selection: relevance of each feature for the target
+% Cleaned data in original units (eda, section 18). Three measures, because
+% each one sees a different kind of relationship: Pearson only linear,
+% Spearman any monotonic one, mutual information any dependence at all.
+% MI uses 10 equal-frequency bins (deciles): about 73 rows per cell of the
+% 10 x 10 joint histogram, enough for a stable estimate.
+rel = L.featureRelevance(eda, feature_cols, target_col, 10);
+disp(round(rel, 3))
