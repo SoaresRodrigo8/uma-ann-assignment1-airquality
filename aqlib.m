@@ -37,6 +37,7 @@ function L = aqlib()
 
     % --- Feature selection ---
     L.featureRelevance = @featureRelevance;
+    L.plotRelevance    = @plotRelevance;
 end
 
 %% ===================== Import and exploration =====================
@@ -668,6 +669,50 @@ function R = featureRelevance(T, feats, target, nBins)
         'RowNames', cellstr(feats), 'VariableNames', {'Pearson', 'Spearman', 'MI'});
     [~, order] = sort(abs(R.Spearman), "descend");
     R = R(order, :);
+end
+
+function fig = plotRelevance(R, target, miBias)
+% Relevance of each feature in two panels sharing the feature axis: Pearson
+% and Spearman correlation with the target (left) and mutual information
+% (right), with the expected MI of two independent variables marked.
+% Input:  R      - table from featureRelevance
+%         target - name of the target
+%         miBias - expected MI (bits) of independent variables, drawn as a line
+% Output: fig    - figure handle
+    C = palette();
+    names = R.Properties.RowNames;
+    n = numel(names);
+
+    fig = newFigure([100 100 1300 600]);
+    tl = tiledlayout(fig, 1, 2, "TileSpacing", "compact", "Padding", "compact");
+
+    ax1 = nexttile(tl); hold(ax1, "on");
+    b = barh(ax1, [R.Pearson, R.Spearman], "grouped", "EdgeColor", "none");
+    b(1).FaceColor = C.orange;
+    b(2).FaceColor = C.blue;
+    xline(ax1, 0, "Color", "k", "LineWidth", 0.8, "HandleVisibility", "off");
+    ax1.YTick = 1:n;
+    ax1.YTickLabel = names;
+    ax1.YDir = "reverse";
+    ax1.YGrid = "off";
+    xlim(ax1, [-1 1]);
+    xlabel(ax1, "Correlation with " + target);
+    legend(ax1, ["Pearson", "Spearman"], "Box", "off", "Location", "southwest");
+    title(ax1, "Linear and monotonic relationship", "FontWeight", "bold");
+
+    ax2 = nexttile(tl); hold(ax2, "on");
+    barh(ax2, R.MI, 0.6, "FaceColor", C.green, "EdgeColor", "none");
+    xline(ax2, miBias, "--", "Estimation bias", "Color", C.grey, "LineWidth", 1.2, ...
+        "LabelVerticalAlignment", "bottom", "FontSize", 11);
+    ax2.YTick = 1:n;
+    ax2.YTickLabel = {};
+    ax2.YDir = "reverse";
+    ax2.YGrid = "off";
+    xlabel(ax2, "Mutual information (bits)");
+    title(ax2, "Any dependence (mutual information)", "FontWeight", "bold");
+    linkaxes([ax1 ax2], "y");
+
+    title(tl, "Relevance of each feature for " + target, "FontWeight", "bold", "FontSize", 17);
 end
 
 function mi = mutualInfo(x, y, nBins)
