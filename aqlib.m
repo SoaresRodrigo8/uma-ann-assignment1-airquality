@@ -40,6 +40,7 @@ function L = aqlib()
     L.plotRelevance    = @plotRelevance;
     L.correlationClusters = @correlationClusters;
     L.plotCorrClusters    = @plotCorrClusters;
+    L.pcaAnalysis         = @pcaAnalysis;
 end
 
 %% ===================== Import and exploration =====================
@@ -792,6 +793,31 @@ function fig = plotCorrClusters(C, names, minCorr)
     axH.XGrid = "off";
     axH.YGrid = "off";
     axH.TickLength = [0 0];
+end
+
+function P = pcaAnalysis(T, feats)
+% Principal component analysis, step by step: (1) standardise each feature
+% (mean 0, variance 1), (2) covariance matrix, (3) eigendecomposition,
+% (4) eigenvalues sorted from largest to smallest and explained variance.
+% Input:  T     - data table without missing values
+%         feats - string array of feature names
+% Output: P     - struct with eigval, explained and cumulative (% of the
+%                 total variance), coeff (loadings: one column per
+%                 component, one row per feature) and score (data projected
+%                 on the components)
+    X = T{:, feats};
+    Z = (X - mean(X)) ./ std(X);              % (1) standardise
+    S = cov(Z);                               % (2) covariance matrix
+    [V, D] = eig(S);                          % (3) eigenvectors and eigenvalues
+    [P.eigval, order] = sort(diag(D), "descend");
+    V = V(:, order);
+    % the sign of an eigenvector is arbitrary: make the largest loading positive
+    [~, imax] = max(abs(V));
+    V = V .* sign(V(sub2ind(size(V), imax, 1:size(V, 2))));
+    P.coeff = V;
+    P.explained = 100 * P.eigval / sum(P.eigval);   % (4) % of the total variance
+    P.cumulative = cumsum(P.explained);
+    P.score = Z * V;
 end
 
 function mi = mutualInfo(x, y, nBins)

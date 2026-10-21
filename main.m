@@ -263,3 +263,25 @@ for t = [0.95 0.90 0.85 0.80]
         end
     end
 end
+
+%% 23. Feature selection: principal component analysis (PCA)
+% Steps of the lecture: standardise, covariance matrix, eigendecomposition,
+% components sorted by eigenvalue. Used as a diagnostic of redundancy: if a
+% few components explain most of the variance, the 11 features carry much
+% less than 11 independent pieces of information. The features themselves
+% are kept (a subset of the original features is selected, not replaced).
+pc = L.pcaAnalysis(eda, feature_cols);
+n_pc = numel(pc.eigval);
+disp(table((1:n_pc)', round(pc.eigval, 3), round(pc.explained, 1), round(pc.cumulative, 1), ...
+    'VariableNames', {'PC', 'Eigenvalue', 'ExplainedPct', 'CumulativePct'}))
+
+% Number of components needed for the usual explained-variance thresholds
+for t = [80 90 95]
+    fprintf("Components for %d%% of the variance: %d\n", t, find(pc.cumulative >= t, 1));
+end
+
+% Loadings: which features each component is made of. The first three
+% carry most of the variance; the last one (eigenvalue close to 0) is a
+% combination of features that is almost constant, i.e. a redundancy.
+disp(array2table(round(pc.coeff(:, [1:3 n_pc]), 2), 'RowNames', cellstr(feature_cols), ...
+    'VariableNames', {'PC1', 'PC2', 'PC3', sprintf('PC%d', n_pc)}))
