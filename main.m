@@ -288,3 +288,15 @@ exportgraphics(fig, fullfile(fig_dir, "pca.pdf"), "ContentType", "vector");
 % combination of features that is almost constant, i.e. a redundancy.
 disp(array2table(round(pc.coeff(:, [1:3 n_pc]), 2), 'RowNames', cellstr(feature_cols), ...
     'VariableNames', {'PC1', 'PC2', 'PC3', sprintf('PC%d', n_pc)}))
+
+%% 24. Feature selection: mRMR (minimum redundancy, maximum relevance)
+% Greedy ranking with the same mutual information as section 21 (n_bins
+% equal-frequency bins). First the most relevant feature; then, at each
+% step, the one with the highest relevance minus mean redundancy with the
+% features already chosen. A feature that repeats what is already selected
+% gets a low (even negative) score, however relevant it is on its own.
+mrmr = L.mrmrRank(eda, feature_cols, target_col, n_bins);
+disp(round(mrmr, 3))
+
+fig = L.plotMRMR(mrmr);
+exportgraphics(fig, fullfile(fig_dir, "mrmr.pdf"), "ContentType", "vector");

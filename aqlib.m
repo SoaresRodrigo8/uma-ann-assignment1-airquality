@@ -42,6 +42,8 @@ function L = aqlib()
     L.plotCorrClusters    = @plotCorrClusters;
     L.pcaAnalysis         = @pcaAnalysis;
     L.plotPCA             = @plotPCA;
+    L.mrmrRank            = @mrmrRank;
+    L.plotMRMR            = @plotMRMR;
 end
 
 %% ===================== Import and exploration =====================
@@ -880,6 +882,80 @@ function fig = plotPCA(P, names, threshold)
     title(ax2, "Loadings on the first two components", "FontWeight", "bold");
 
     title(tl, "Principal component analysis of the features", "FontWeight", "bold", "FontSize", 17);
+end
+
+function M = mrmrRank(T, feats, target, nBins)
+% Minimum Redundancy Maximum Relevance ranking (greedy). Relevance is the
+% mutual information (MI) with the target; redundancy is the mean MI with
+% the features already selected. The first feature is the most relevant
+% one; then, at each step, the feature with the highest
+% score = relevance - redundancy is added.
+% Input:  T      - data table without missing values
+%         feats  - string array of feature names
+%         target - name of the target
+%         nBins  - number of equal-frequency bins for the MI
+% Output: M      - table in selection order: Relevance, Redundancy and
+%                  Score of each feature at the step it was selected
+    X = T{:, feats};
+    y = T.(target);
+    n = numel(feats);
+
+    rel = zeros(n, 1);                       % MI of each feature with the target
+    MIxx = zeros(n);                         % MI between every pair of features
+    for i = 1:n
+        rel(i) = mutualInfo(X(:, i), y, nBins);
+        for j = i + 1:n
+            MIxx(i, j) = mutualInfo(X(:, i), X(:, j), nBins);
+            MIxx(j, i) = MIxx(i, j);
+        end
+    end
+
+    selected = zeros(n, 1);
+    red = zeros(n, 1);
+    score = zeros(n, 1);
+    left = 1:n;
+    for step = 1:n
+        if step == 1
+            r = zeros(1, numel(left));
+        else
+            r = mean(MIxx(selected(1:step - 1), left), 1);   % redundancy with the selected
+        end
+        s = rel(left)' - r;
+        [score(step), k] = max(s);
+        selected(step) = left(k);
+        red(step) = r(k);
+        left(k) = [];
+    end
+
+    M = table(rel(selected), red, score, 'RowNames', cellstr(feats(selected)), ...
+        'VariableNames', {'Relevance', 'Redundancy', 'Score'});
+end
+
+function fig = plotMRMR(M)
+% mRMR ranking: relevance and redundancy of each feature at the step it was
+% selected (bars) and the resulting score (line), in selection order.
+% Input:  M   - table from mrmrRank
+% Output: fig - figure handle
+    C = palette();
+    n = height(M);
+
+    fig = newFigure([100 100 1300 560]);
+    ax = axes(fig); hold(ax, "on");
+    b = bar(ax, 1:n, [M.Relevance, M.Redundancy], "grouped", "EdgeColor", "none");
+    b(1).FaceColor = C.green;
+    b(2).FaceColor = [0.7 0.7 0.7];
+    plot(ax, 1:n, M.Score, "-o", "Color", C.red, "LineWidth", 2, ...
+        "MarkerFaceColor", C.red, "MarkerSize", 6);
+    yline(ax, 0, "Color", "k", "LineWidth", 0.8, "HandleVisibility", "off");
+    ax.XTick = 1:n;
+    ax.XTickLabel = strcat(string(1:n)', ". ", string(M.Properties.RowNames));
+    ax.XTickLabelRotation = 35;
+    ax.XGrid = "off";
+    xlim(ax, [0.4 n + 0.6]);
+    ylabel(ax, "Mutual information (bits)");
+    legend(ax, ["Relevance (MI with the target)", "Redundancy (mean MI with the selected)", ...
+        "Score = relevance - redundancy"], "Box", "off", "Location", "northeast");
+    title(ax, "mRMR ranking (selection order)", "FontWeight", "bold");
 end
 
 function mi = mutualInfo(x, y, nBins)
