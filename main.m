@@ -377,6 +377,110 @@ writetable(scaling_params, fullfile(out_dir, "scaling_params.csv"));
 
 fprintf("Saved %d rows to %s\n", height(clean_out), out_dir);
 
+%% 18. EDA: each feature against the target
+% Uses the cleaned but unscaled data, so the axes are in original units.
+% The red line is the mean CO(GT) within 20 equal-sized bins of the feature,
+% which shows the shape of the relationship without assuming a straight line.
+eda = df_before_scaling;
+y = eda.(target_col);
+feats = feature_cols(idx);          % same order as the correlation bar chart (section 8)
+
+fig = figure("Position", [50 50 1600 950]);
+tl = tiledlayout(fig, 3, 4, "TileSpacing", "compact", "Padding", "compact");
+for i = 1:numel(feats)
+    ax = nexttile(tl); hold(ax, "on");
+    x = eda.(feats(i));
+    s = scatter(ax, x, y, 4, blue, "filled", "MarkerFaceAlpha", 0.15, "MarkerEdgeColor", "none");
+
+    edges = unique(quantile(x, 0:0.05:1));      % unique: clipped values create repeated edges
+    bin = discretize(x, edges);
+    nb = numel(edges) - 1;
+    xm = accumarray(bin, x, [nb 1], @mean, NaN);
+    ym = accumarray(bin, y, [nb 1], @mean, NaN);
+    ok = ~isnan(xm);
+    t = plot(ax, xm(ok), ym(ok), "-o", "Color", red, "LineWidth", 2.2, ...
+        "MarkerSize", 3, "MarkerFaceColor", red);
+
+    title(ax, feats(i), "FontWeight", "bold", "FontSize", 12);
+    if mod(i - 1, 4) == 0
+        ylabel(ax, "CO(GT) (mg/m³)");
+    end
+    if i == 1
+        ax1 = ax; hs = s; ht = t;
+    end
+end
+lg = legend(ax1, [hs ht], ["Hourly observations", "Mean CO(GT) per bin of the feature"], ...
+    "Box", "off", "FontSize", 12);
+lg.Layout.Tile = 12;                % the empty 12th tile
+title(tl, "Features against the target", "FontWeight", "bold", "FontSize", 17);
+
+% Rasterised: about 90,000 points would make a vector PDF very slow to open
+exportgraphics(fig, fullfile(fig_dir, "features_vs_target.pdf"), ...
+    "ContentType", "image", "Resolution", 300);
+
+fig = figure("Position", [100 100 800 550]);
+ax = axes(fig);
+scatter(ax, eda.("NOx(GT)"), y, 4, days(eda.Datetime - eda.Datetime(1)), ...
+    "filled", "MarkerFaceAlpha", 0.3);
+cb = colorbar(ax);
+cb.Label.String = "Days since the first measurement";
+xlabel(ax, "NOx(GT)");
+ylabel(ax, "CO(GT) (mg/m³)");
+title(ax, "NOx(GT) against CO(GT), coloured by date", "FontWeight", "bold");
+
+exportgraphics(fig, fullfile(fig_dir, "NOx_bands.pdf"), ...
+    "ContentType", "image", "Resolution", 300);
+
+
+%% 19. EDA: CO(GT) over the measurement period
+% Hourly values on a complete hourly grid, so removed rows show as gaps
+% instead of being joined by a line, plus the daily mean to show the trend.
+tt = table2timetable(eda(:, ["Datetime", target_col]));
+hourly = retime(tt, "hourly", "fillwithmissing");
+daily = retime(tt, "daily", "mean");
+
+light_blue = blue + (1 - blue) * 0.65;
+
+fig = figure("Position", [100 100 1400 450]);
+ax = axes(fig); hold(ax, "on");
+plot(ax, hourly.Datetime, hourly.(target_col), "Color", light_blue, "LineWidth", 0.5, ...
+    "DisplayName", "Hourly value");
+plot(ax, daily.Datetime, daily.(target_col), "Color", navy, "LineWidth", 1.8, ...
+    "DisplayName", "Daily mean");
+ylabel(ax, "CO(GT) (mg/m³)");
+title(ax, "CO(GT) over the measurement period", "FontWeight", "bold");
+legend(ax, "Box", "off", "Location", "northwest");
+xlim(ax, [min(hourly.Datetime) max(hourly.Datetime)]);
+exportgraphics(fig, fullfile(fig_dir, "co_over_time.pdf"), ...
+    "ContentType", "image", "Resolution", 300);
+
+%% 20. EDA: feature redundancy
+% Scatter plots of the three most similar feature pairs. A narrow band of
+% points means one feature almost determines the other. The correlation
+% matrix is only used to pick the pairs; its values are not shown.
+R = corr(eda{:, feature_cols}, "Type", "Spearman");
+R(tril(true(size(R)))) = 0;                 % keep each pair once
+[~, order] = sort(abs(R(:)), "descend");
+[ia, ib] = ind2sub(size(R), order(1:3));
+pairs = [feature_cols(ia)', feature_cols(ib)'];
+% To choose the pairs yourself instead:
+% pairs = ["C6H6(GT)", "PT08.S2(NMHC)"; "PT08.S1(CO)", "PT08.S5(O3)"; "NOx(GT)", "NO2(GT)"];
+
+fig = figure("Position", [100 50 550 1300]);
+tl = tiledlayout(fig, size(pairs, 1), 1, "TileSpacing", "compact", "Padding", "compact");
+for p = 1:size(pairs, 1)
+    ax = nexttile(tl);
+    scatter(ax, eda.(pairs(p, 1)), eda.(pairs(p, 2)), 4, blue, "filled", ...
+        "MarkerFaceAlpha", 0.15, "MarkerEdgeColor", "none");
+    xticks(ax, []);                 % no values on the axes (also removes the grid)
+    yticks(ax, []);
+    ax.FontSize = 16;               % axis titles scale with this
+    xlabel(ax, pairs(p, 1));
+    ylabel(ax, pairs(p, 2));
+    title(ax, pairs(p, 1) + " vs " + pairs(p, 2), "FontWeight", "bold", "FontSize", 16);
+end
+exportgraphics(fig, fullfile(fig_dir, "redundant_pairs.pdf"), ...
+    "ContentType", "image", "Resolution", 300);
 
 %% ------------------------------------------------------------------------
 %  Local functions
