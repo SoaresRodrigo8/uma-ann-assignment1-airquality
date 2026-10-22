@@ -50,11 +50,15 @@ function L = aqlib()
     L.selectFeatures      = @selectFeatures;
 
     % --- Feature engineering ---
-    L.inputGrid          = @inputGrid;
-    L.hourlyProfile      = @hourlyProfile;
-    L.plotHourlyProfile  = @plotHourlyProfile;
-    L.trailingMean       = @trailingMean;
-    L.plotWindowFeatures = @plotWindowFeatures;
+    L.inputGrid            = @inputGrid;
+    L.hourlyProfile        = @hourlyProfile;
+    L.plotHourlyProfile    = @plotHourlyProfile;
+    L.trailingMean         = @trailingMean;
+    L.plotWindowFeatures   = @plotWindowFeatures;
+    L.maxCorrWith          = @maxCorrWith;
+    L.addedRelief          = @addedRelief;
+    L.judgeNewFeatures     = @judgeNewFeatures;
+    L.plotAddedInformation = @plotAddedInformation;
 end
 
 %% ===================== Import and exploration =====================
@@ -1192,4 +1196,126 @@ function fig = plotWindowFeatures(W, xName, target)
     xlim(ax4, [W.Time(1) W.Time(end)]);
     set(axs(1:3), "XTickLabel", []);
     title(tl, "Window features of " + xName + " over one week", "FontWeight", "bold", "FontSize", 16);
+end
+
+function D = maxCorrWith(T, feats, base)
+% Highest absolute Spearman correlation of each feature with a set of base
+% features, and which base feature it is: a value close to 1 means the
+% feature repeats information the base features already have.
+% Input:  T     - data table without missing values
+%         feats - string array of the features to check
+%         base  - string array of the base features
+% Output: D     - table with MaxCorr (|rho|) and MostSimilar, one row per feature
+    R = abs(corr(T{:, feats}, T{:, base}, "Type", "Spearman"));
+    [maxCorr, j] = max(R, [], 2);
+    D = table(maxCorr, base(j)', 'RowNames', cellstr(feats), ...
+        'VariableNames', {'MaxCorr', 'MostSimilar'});
+end
+
+function W = addedRelief(T, base, feats, target, ks, seed)
+% RReliefF weight of each new feature when it is added ALONE to the base
+% features, for several numbers of neighbours. Each run has its own random
+% noise column (reliefWeights), and its weight is kept as the reference.
+% Adding the new features one at a time means that a new feature does not
+% share its weight with another new feature that carries the same information.
+% Input:  T      - data table without missing values
+%         base   - string array of the base features
+%         feats  - string array of the new features
+%         target - name of the target
+%         ks     - vector with the numbers of neighbours to test
+%         seed   - seed of the random noise column
+% Output: W      - table, one row per new feature, with Weight and Noise
+%                  (one column per k) and AboveNoise (true if the weight is
+%                  above the noise for every k)
+    n = numel(feats);
+    w = NaN(n, numel(ks));
+    noise = NaN(n, numel(ks));
+    for i = 1:n
+        for j = 1:numel(ks)
+            R = reliefWeights(T, [base, feats(i)], target, ks(j), seed);
+            w(i, j) = R{feats(i), "Weight"};
+            noise(i, j) = R{"Random noise", "Weight"};
+        end
+    end
+    W = table(w, noise, all(w > noise, 2), 'RowNames', cellstr(feats), ...
+        'VariableNames', {'Weight', 'Noise', 'AboveNoise'});
+end
+
+function D = judgeNewFeatures(D, minCorr)
+% Decides whether each new feature adds information to the base features.
+% It does if both hold:
+%   1. its RReliefF weight is above the noise for every k tested;
+%   2. it is not redundant: |rho| < minCorr with every base feature.
+% Every rule that fails is listed in Reason.
+% Input:  D       - table, one row per new feature, with AboveNoise
+%                   (logical), MaxCorr (|rho|) and MostSimilar
+%         minCorr - |rho| from which two features are redundant
+% Output: D       - same table with Adds (logical) and Reason (string)
+    reason = strings(height(D), 1);
+    for j = 1:height(D)
+        r = strings(0);
+        if ~D.AboveNoise(j)
+            r(end + 1) = "no information above noise (RReliefF)";
+        end
+        if D.MaxCorr(j) >= minCorr
+            r(end + 1) = sprintf("redundant with %s (|rho| = %.3f)", D.MostSimilar(j), D.MaxCorr(j));
+        end
+        reason(j) = strjoin(r, "; ");
+    end
+    D.Adds = reason == "";
+    D.Reason = reason;
+end
+
+function fig = plotAddedInformation(names, mi, w, noise, isNew, k)
+% Two panels with the features in the same order: the mutual information
+% with the target (relevance on its own) and the RReliefF weight in the
+% context of the base features. New features in a different colour; the
+% dashed line is the noise level.
+% Input:  names - string array of feature names
+%         mi    - mutual information of each feature with the target (bits)
+%         w     - RReliefF weight of each feature
+%         noise - weight of the random noise column (reference level)
+%         isNew - logical vector, true for the engineered features
+%         k     - number of neighbours used (for the title)
+% Output: fig   - figure handle
+    C = palette();
+    [~, order] = sort(mi, "descend");
+    names = names(order); mi = mi(order); w = w(order); isNew = isNew(order);
+    n = numel(names);
+    colors = repmat(C.blue, n, 1);
+    colors(isNew, :) = repmat(C.orange, sum(isNew), 1);
+
+    fig = newFigure([100 100 1300 600]);
+    tl = tiledlayout(fig, 1, 2, "TileSpacing", "compact", "Padding", "compact");
+
+    ax1 = nexttile(tl); hold(ax1, "on");
+    b1 = barh(ax1, mi, 0.65, "FaceColor", "flat", "EdgeColor", "none");
+    b1.CData = colors;
+    xlabel(ax1, "Mutual information with the target (bits)");
+    title(ax1, "Relevance on its own", "FontWeight", "bold");
+
+    ax2 = nexttile(tl); hold(ax2, "on");
+    b2 = barh(ax2, w, 0.65, "FaceColor", "flat", "EdgeColor", "none");
+    b2.CData = colors;
+    xline(ax2, noise, "--", "Noise level", "Color", C.grey, "LineWidth", 1.2, ...
+        "LabelVerticalAlignment", "bottom", "FontSize", 11);
+    xline(ax2, 0, "Color", "k", "LineWidth", 0.8);
+    xlim(ax2, [1.8 * min(0, min([w; noise])), 1.08 * max(w)]);
+    xlabel(ax2, "RReliefF weight");
+    title(ax2, sprintf("Added to the selected inputs (k = %d)", k), "FontWeight", "bold");
+
+    for ax = [ax1 ax2]
+        ax.YTick = 1:n;
+        ax.TickLabelInterpreter = "none";       % "_" in the names is not a subscript
+        ax.YTickLabel = names;
+        ax.YDir = "reverse";
+        ax.YGrid = "off";
+    end
+    ax2.YTickLabel = [];
+    linkaxes([ax1 ax2], "y");
+
+    % Legend with one entry per colour
+    p1 = patch(ax1, NaN, NaN, C.blue, "EdgeColor", "none", "DisplayName", "Selected input (step 4)");
+    p2 = patch(ax1, NaN, NaN, C.orange, "EdgeColor", "none", "DisplayName", "Engineered feature");
+    legend(ax1, [p1 p2], "Box", "off", "Location", "southeast");
 end

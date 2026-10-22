@@ -480,3 +480,74 @@ fprintf("Week shown: %d hours, %d without CO\n", height(W), sum(isnan(W.Target))
 
 fig = L.plotWindowFeatures(W, "PT08.S2(NMHC)", target_col);
 exportgraphics(fig, fullfile(fig_dir, "window_features.pdf"), "ContentType", "vector");
+
+%% 30. Feature engineering: do the new features add information?
+% Same measures and thresholds as step 4, on the 7329 rows of eng:
+%   relevance on its own  Pearson, Spearman and MI with CO (section 21)
+%   redundancy            highest |rho| with the 7 selected inputs (section 22)
+%   added information     RReliefF weight when the feature is added alone
+%                         to the 7 selected inputs, against random noise,
+%                         for k = 5, 10, 20, 50 (section 24)
+% Rule, fixed before looking at the result: a new feature adds information
+% if its RReliefF weight is above the noise for every k AND it has
+% |rho| < min_corr (0.9) with every selected input.
+rel_new = L.featureRelevance(eng, new_cols, target_col, n_bins);
+disp(round(rel_new, 3))
+
+red_new = L.maxCorrWith(eng, new_cols, selected);
+added = L.addedRelief(eng, selected, new_cols, target_col, ks, 1);
+disp(array2table(round(1000 * [added.Weight, added.Noise], 2), 'RowNames', cellstr(new_cols), ...
+    'VariableNames', [compose("w_k%d", ks), compose("noise_k%d", ks)]))   % x 1e-3
+
+new_crit = table(rel_new{cellstr(new_cols), "Spearman"}, rel_new{cellstr(new_cols), "MI"}, ...
+    red_new.MaxCorr, red_new.MostSimilar, added.Weight(:, ks == k_relief), added.AboveNoise, ...
+    'RowNames', cellstr(new_cols), 'VariableNames', ...
+    {'Spearman', 'MI', 'MaxCorr', 'MostSimilar', 'Relief', 'AboveNoise'});
+new_crit = L.judgeNewFeatures(new_crit, min_corr);
+show = new_crit;
+show.Spearman = round(show.Spearman, 3);
+show.MI = round(show.MI, 3);
+show.MaxCorr = round(show.MaxCorr, 3);
+show.Relief = round(1000 * show.Relief, 2);         % x 1e-3
+disp(show)
+
+kept_new = new_cols(new_crit.Adds);
+fprintf("New features that add information: %s\n", strjoin(kept_new, ", "));
+
+% Confirmation: all the kept features together with the 7 selected inputs
+% (k = 10). The weights of the 7 inputs are compared with a run without the
+% new features, on the same rows, to see which inputs they take weight from.
+w_base = L.reliefWeights(eng, selected, target_col, k_relief, 1);
+w_all = L.reliefWeights(eng, [selected, kept_new], target_col, k_relief, 1);
+both = [cellstr(selected), cellstr(kept_new), {'Random noise'}];
+w_before = NaN(numel(both), 1);
+w_before([1:numel(selected), end]) = w_base{[cellstr(selected), {'Random noise'}], "Weight"};
+disp(array2table(round(1000 * [w_before, w_all{both, "Weight"}], 2), 'RowNames', both, ...
+    'VariableNames', {'Without', 'With'}))           % x 1e-3
+
+% Figure: relevance on its own (MI) and weight in the context of the 7
+% selected inputs (RReliefF, k = 10). The selected inputs come from the run
+% without new features; each new feature from its own run (added alone).
+% The noise line is the highest noise weight of all these runs.
+rel_sel = L.featureRelevance(eng, selected, target_col, n_bins);
+fig_names = [selected, new_cols];
+fig_mi = [rel_sel{cellstr(selected), "MI"}; rel_new{cellstr(new_cols), "MI"}];
+fig_w = [w_base{cellstr(selected), "Weight"}; added.Weight(:, ks == k_relief)];
+fig_noise = max([w_base{"Random noise", "Weight"}; added.Noise(:, ks == k_relief)]);
+fig = L.plotAddedInformation(fig_names, fig_mi, fig_w, fig_noise, ...
+    ismember(fig_names, new_cols), k_relief);
+exportgraphics(fig, fullfile(fig_dir, "engineered_features.pdf"), "ContentType", "vector");
+
+% Save the final data set: the 7 selected inputs and the new features that
+% add information, in original units and standardised (z-score fitted on
+% these rows; the target is not scaled)
+eng_cols = ["Datetime", target_col, selected, kept_new];
+eng_out = eng(:, eng_cols);
+eng_out.Datetime.Format = "yyyy-MM-dd HH:mm:ss";
+writetable(eng_out, fullfile(out_dir, "airquality_engineered.csv"));
+
+P_eng = L.zscoreFit(eng_out, [selected, kept_new]);
+writetable(L.zscoreApply(eng_out, P_eng), fullfile(out_dir, "airquality_engineered_scaled.csv"));
+writetable(table([selected, kept_new]', P_eng.Mean, P_eng.Std, ...
+    'VariableNames', {'feature', 'mean', 'std'}), fullfile(out_dir, "scaling_params_engineered.csv"));
+fprintf("Saved %d rows with %d inputs to %s\n", height(eng_out), numel(selected) + numel(kept_new), out_dir);
