@@ -48,6 +48,11 @@ function L = aqlib()
     L.sameSeasonShift     = @sameSeasonShift;
     L.plotStability       = @plotStability;
     L.selectFeatures      = @selectFeatures;
+
+    % --- Feature engineering ---
+    L.inputGrid         = @inputGrid;
+    L.hourlyProfile     = @hourlyProfile;
+    L.plotHourlyProfile = @plotHourlyProfile;
 end
 
 %% ===================== Import and exploration =====================
@@ -1064,4 +1069,72 @@ function mi = mutualInfo(x, y, nBins)
     pind = sum(pxy, 2) * sum(pxy, 1);                  % product of the marginals
     nz = pxy > 0;
     mi = sum(pxy(nz) .* log2(pxy(nz) ./ pind(nz)));
+end
+
+%% ===================== Feature engineering =====================
+
+function [Xg, gridTime] = inputGrid(T, vars, lo, hi)
+% Places the inputs of every measured hour on a complete hourly grid,
+% clipped to the given bounds, so that windows and hour-to-hour changes use
+% real hours. Hours without a row, or with a missing value, stay NaN.
+% Input:  T        - data table with a sorted Datetime column
+%         vars     - string array of input names
+%         lo/hi    - row vectors with the clipping bounds of each input
+% Output: Xg       - matrix (hours x inputs) on the grid
+%         gridTime - datetime of each hour of the grid
+    [hidx, ~] = hourlyIndex(T.Datetime);
+    gridTime = T.Datetime(1) + hours(0:hidx(end) - 1)';
+    Xg = NaN(hidx(end), numel(vars));
+    Xg(hidx, :) = clipToBounds(T{:, vars}, lo, hi);
+end
+
+function P = hourlyProfile(T, target)
+% Median and interquartile range of the target for each hour of the day,
+% separately for weekdays and weekends.
+% Input:  T      - data table with a Datetime column
+%         target - name of the target
+% Output: P      - table, one row per hour (0-23), with the median, Q1 and Q3
+%                  of the target on weekdays and on weekends
+    h = T.Datetime.Hour;
+    we = isweekend(T.Datetime);
+    y = T.(target);
+    S = NaN(24, 6);
+    for k = 0:23
+        yd = y(h == k & ~we);
+        ye = y(h == k & we);
+        S(k + 1, :) = [quantile7(yd, 0.5), quantile7(yd, 0.25), quantile7(yd, 0.75), ...
+                       quantile7(ye, 0.5), quantile7(ye, 0.25), quantile7(ye, 0.75)];
+    end
+    P = array2table([(0:23)', S], 'VariableNames', {'Hour', 'WeekdayMedian', 'WeekdayQ1', ...
+        'WeekdayQ3', 'WeekendMedian', 'WeekendQ1', 'WeekendQ3'});
+end
+
+function fig = plotHourlyProfile(P, target)
+% Daily profile of the target: median per hour as a line and the
+% interquartile range as a shaded band, for weekdays and weekends.
+% Input:  P      - table from hourlyProfile
+%         target - name of the target
+% Output: fig    - figure handle
+    C = palette();
+    fig = newFigure([100 100 1100 650]);
+    ax = axes(fig); hold(ax, "on");
+    groups = ["Weekday", "Weekend"];
+    colors = [C.blue; C.orange];
+    for g = 1:2
+        q1 = P.(groups(g) + "Q1");
+        q3 = P.(groups(g) + "Q3");
+        fill(ax, [P.Hour; flipud(P.Hour)], [q1; flipud(q3)], colors(g, :), ...
+            "FaceAlpha", 0.15, "EdgeColor", "none", "HandleVisibility", "off");
+        plot(ax, P.Hour, P.(groups(g) + "Median"), "-o", "Color", colors(g, :), ...
+            "LineWidth", 2, "MarkerFaceColor", colors(g, :), "MarkerSize", 6, ...
+            "DisplayName", groups(g) + " (median)");
+    end
+    xlim(ax, [0 23]);
+    xticks(ax, 0:2:22);
+    ylim(ax, [0 ceil(max([P.WeekdayQ3; P.WeekendQ3]))]);
+    xlabel(ax, "Hour of day");
+    ylabel(ax, target + " (mg/m³)");
+    title(ax, "Daily profile of " + target + ": weekdays vs weekends", "FontWeight", "bold");
+    subtitle(ax, "Lines: median; shaded bands: interquartile range");
+    legend(ax, "Box", "off", "Location", "northwest");
 end

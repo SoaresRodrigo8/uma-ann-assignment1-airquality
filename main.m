@@ -388,3 +388,46 @@ fprintf("Removed: %s\n", strjoin(feature_cols(~crit.Keep), ", "));
 sel_cols = ["Datetime", target_col, selected];
 writetable(clean_out(:, sel_cols), fullfile(out_dir, "airquality_selected.csv"));
 writetable(scaled_out(:, sel_cols), fullfile(out_dir, "airquality_selected_scaled.csv"));
+
+%% 27. Feature engineering: hourly grid of the selected inputs
+% Moving windows and hour-to-hour changes need the previous hours, but the
+% 7344 cleaned rows are not consecutive (section 10 removed the hours
+% without CO). The sensors were still measured in those hours: only the
+% target was missing, and the target is never used to build a feature. So
+% the selected inputs of all the raw hours go on a complete hourly grid,
+% clipped to the same bounds as in section 11. Only the sensor-offline
+% hours stay missing.
+[~, j_sel] = ismember(selected, feature_cols);
+[Xg, grid_time] = L.inputGrid(df_before, selected, lo(j_sel), hi(j_sel));
+[~, pos] = ismember(eda.Datetime, grid_time);       % grid row of each cleaned hour
+fprintf("Grid: %d hours, %d with missing inputs (sensor offline)\n", ...
+    numel(grid_time), sum(any(isnan(Xg), 2)));
+
+% Check: in the cleaned hours the grid has exactly the values of section 13
+% (the selected inputs had no imputation, only clipping)
+fprintf("Largest difference to the cleaned data: %g\n", max(abs(Xg(pos, :) - eda{:, selected}), [], "all"));
+
+% Previous hour missing on the grid against using only the cleaned rows
+prev_missing = [true; any(isnan(Xg(1:end - 1, :)), 2)];
+[hidx_eda, in_eda] = L.hourlyIndex(eda.Datetime);
+prev_removed = [true; ~in_eda(1:end - 1)];
+fprintf("Rows without the previous hour: %d on the grid, %d with the cleaned rows only\n", ...
+    sum(prev_missing(pos)), sum(prev_removed(hidx_eda)));
+
+%% 28. Feature engineering: hour of the day
+% CO comes mostly from traffic, so it follows the daily rhythm of the city
+% (rush hours, quiet nights). None of the selected inputs says what time it
+% is. Hour is kept as an integer 0-23: its relationship with CO has two
+% peaks, so it is not monotonic, and its relevance is measured with mutual
+% information in section 30.
+eng = eda(:, ["Datetime", target_col, selected]);   % new features are added to this table
+eng.Hour = eda.Datetime.Hour;
+
+% Median and IQR of CO for each hour, weekdays and weekends separately
+weekend = isweekend(eda.Datetime);
+fprintf("Hours: %d on weekdays, %d on weekends\n", sum(~weekend), sum(weekend));
+prof = L.hourlyProfile(eda, target_col);
+disp(round(prof, 2))
+
+fig = L.plotHourlyProfile(prof, target_col);
+exportgraphics(fig, fullfile(fig_dir, "co_by_hour.pdf"), "ContentType", "vector");
