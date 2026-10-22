@@ -431,3 +431,52 @@ disp(round(prof, 2))
 
 fig = L.plotHourlyProfile(prof, target_col);
 exportgraphics(fig, fullfile(fig_dir, "co_by_hour.pdf"), "ContentType", "vector");
+
+%% 29. Feature engineering: moving windows and hour-to-hour change of PT08.S2
+% All three use PT08.S2(NMHC), chosen beforehand as the most relevant input
+% (section 21) and one of the most stable (section 25). They are computed on
+% the hourly grid (section 27) and only look at past hours, since a future
+% model cannot use values from the future.
+%   S2_ma3   mean of the last 3 h: smooths hour-to-hour noise. The lecture
+%            (T-02) gives it as a feature with little new information.
+%   S2_dev24 PT08.S2 minus its mean over the last 24 h: how far this hour is
+%            above or below the usual level of the last day. Slow changes
+%            (sensor drift, season) are removed and the traffic peaks remain.
+%   S2_diff1 PT08.S2 minus its value one hour before: whether pollution is
+%            rising or falling right now.
+s2 = Xg(:, selected == "PT08.S2(NMHC)");
+[ma3, n3] = L.trailingMean(s2, 3);
+[ma24, n24] = L.trailingMean(s2, 24);
+prev = [NaN; s2(1:end - 1)];
+
+eng.S2_ma3 = ma3(pos);
+eng.S2_dev24 = s2(pos) - ma24(pos);
+eng.S2_diff1 = s2(pos) - prev(pos);
+
+% Windows with less than half of their hours available (missing hours are
+% ignored, the current hour is always there)
+fprintf("Rows with less than half of the window: 3 h: %d | 24 h: %d\n", ...
+    sum(n3(pos) < 1.5), sum(n24(pos) < 12));
+
+% The change from the previous hour cannot be computed when the previous
+% hour is missing (sensor offline). Those rows are removed: the value is
+% not invented.
+no_prev = isnan(eng.S2_diff1);
+fprintf("Rows removed (previous hour missing): %d\n", sum(no_prev));
+eng = eng(~no_prev, :);
+fprintf("Rows left: %d\n", height(eng));
+
+new_cols = ["Hour", "S2_ma3", "S2_dev24", "S2_diff1"];
+disp(round(L.describeVars(eng, new_cols), 2))
+
+% One complete week (Monday to Sunday) in the high-CO period of the year
+week = grid_time >= datetime(2004, 11, 29) & grid_time < datetime(2004, 12, 6);
+co_grid = NaN(numel(grid_time), 1);
+co_grid(pos) = eda.(target_col);                    % missing hours stay NaN
+W = table(grid_time(week), s2(week), ma3(week), ma24(week), s2(week) - ma24(week), ...
+    s2(week) - prev(week), co_grid(week), ...
+    'VariableNames', {'Time', 'X', 'MA3', 'MA24', 'Dev24', 'Diff1', 'Target'});
+fprintf("Week shown: %d hours, %d without CO\n", height(W), sum(isnan(W.Target)));
+
+fig = L.plotWindowFeatures(W, "PT08.S2(NMHC)", target_col);
+exportgraphics(fig, fullfile(fig_dir, "window_features.pdf"), "ContentType", "vector");

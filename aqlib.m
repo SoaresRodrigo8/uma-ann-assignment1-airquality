@@ -50,9 +50,11 @@ function L = aqlib()
     L.selectFeatures      = @selectFeatures;
 
     % --- Feature engineering ---
-    L.inputGrid         = @inputGrid;
-    L.hourlyProfile     = @hourlyProfile;
-    L.plotHourlyProfile = @plotHourlyProfile;
+    L.inputGrid          = @inputGrid;
+    L.hourlyProfile      = @hourlyProfile;
+    L.plotHourlyProfile  = @plotHourlyProfile;
+    L.trailingMean       = @trailingMean;
+    L.plotWindowFeatures = @plotWindowFeatures;
 end
 
 %% ===================== Import and exploration =====================
@@ -1137,4 +1139,57 @@ function fig = plotHourlyProfile(P, target)
     title(ax, "Daily profile of " + target + ": weekdays vs weekends", "FontWeight", "bold");
     subtitle(ax, "Lines: median; shaded bands: interquartile range");
     legend(ax, "Box", "off", "Location", "northwest");
+end
+
+function [m, nUsed] = trailingMean(x, window)
+% Mean of the last `window` hours (the current hour included) of a series
+% on a complete hourly grid. Only past hours are used, so the value at an
+% hour does not depend on the future. Missing hours are ignored.
+% Input:  x      - column vector on the hourly grid (from inputGrid)
+%         window - window length in hours
+% Output: m      - trailing mean at each hour of the grid
+%         nUsed  - number of hours with a value inside each window
+    m = movmean(x, [window - 1, 0], "omitnan");
+    nUsed = movsum(~isnan(x), [window - 1, 0]);
+end
+
+function fig = plotWindowFeatures(W, xName, target)
+% One period of an input with its window features, one panel each, all on
+% the same time axis: the input with its 3 h and 24 h trailing means, the
+% deviation from the 24 h mean, the change from the previous hour and the
+% target. Missing hours show as gaps.
+% Input:  W      - table with Time, X, MA3, MA24, Dev24, Diff1 and Target
+%         xName  - name of the input
+%         target - name of the target
+% Output: fig    - figure handle
+    C = palette();
+    fig = newFigure([100 50 1300 1100]);
+    tl = tiledlayout(fig, 4, 1, "TileSpacing", "compact", "Padding", "compact");
+
+    ax1 = nexttile(tl); hold(ax1, "on");
+    plot(ax1, W.Time, W.X, "Color", C.blue, "LineWidth", 1, "DisplayName", xName);
+    plot(ax1, W.Time, W.MA3, "Color", C.orange, "LineWidth", 1.5, "DisplayName", "Mean of the last 3 h");
+    plot(ax1, W.Time, W.MA24, "Color", C.navy, "LineWidth", 2.5, "DisplayName", "Mean of the last 24 h");
+    ylabel(ax1, xName);
+    legend(ax1, "Box", "off", "Location", "northoutside", "Orientation", "horizontal");
+
+    ax2 = nexttile(tl); hold(ax2, "on");
+    plot(ax2, W.Time, W.Dev24, "Color", C.green, "LineWidth", 1.5);
+    yline(ax2, 0, "Color", "k", "LineWidth", 0.8);
+    ylabel(ax2, "Deviation from 24 h mean");
+
+    ax3 = nexttile(tl); hold(ax3, "on");
+    plot(ax3, W.Time, W.Diff1, "Color", C.red, "LineWidth", 1.2);
+    yline(ax3, 0, "Color", "k", "LineWidth", 0.8);
+    ylabel(ax3, "Change from previous hour");
+
+    ax4 = nexttile(tl);
+    plot(ax4, W.Time, W.Target, "Color", C.grey, "LineWidth", 1.5);
+    ylabel(ax4, target + " (mg/m³)");
+
+    axs = [ax1 ax2 ax3 ax4];
+    linkaxes(axs, "x");
+    xlim(ax4, [W.Time(1) W.Time(end)]);
+    set(axs(1:3), "XTickLabel", []);
+    title(tl, "Window features of " + xName + " over one week", "FontWeight", "bold", "FontSize", 16);
 end
