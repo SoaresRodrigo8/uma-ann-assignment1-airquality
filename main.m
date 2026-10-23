@@ -1,7 +1,8 @@
-%% Air Quality (UCI): cleaning, preprocessing and plots
-% MATLAB version of main.py. All the functions are in aqlib.m.
-% Requires MATLAB R2023a or newer and the Statistics and Machine Learning
-% Toolbox (ksdensity, skewness, corr).
+%% Air Quality (UCI): exploration, cleaning, feature selection and engineering
+% Project script, one section per step of the assignment. All the
+% functions are in aqlib.m.
+% Developed and tested with MATLAB R2026b and the Statistics and Machine
+% Learning Toolbox (ksdensity, skewness, corr).
 
 clear; clc; close all;
 L = aqlib();
